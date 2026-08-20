@@ -95,4 +95,4 @@ clean:
 	docker system prune -f
 
 # Full rebuild and run
-all: clean build up run
+all: clean build up migrate run

@@ -30,7 +30,7 @@ from src.models import (
     UnifiedInvoice,
 )
 from settings import settings
-from utils import wait_retry_after_aware
+from src.utils import wait_retry_after_aware
 
 
 @dataclass
@@ -285,28 +285,38 @@ class SyncEngine:
         """
         return f"{self.tenant_id}:{self.source.name}:{invoice.external_id}:{invoice.content_hash}"
 
-    async def replay_failed(self, run_id: str) -> SyncRun:
+    async def replay_failed(
+        self,
+        source_credentials: dict[str, Any],
+        target_credentials: dict[str, Any],
+    ) -> SyncRun:
         """
-        Replay failed records after a previous sync run.
+        Replay all failed records for this tenant and connector pair.
 
-        Re-fetches each failed record from the source (so fixes upstream are
-        picked up) and re-exports it. Scope is all FAILED states for this
-        tenant — states do not track which run created them, so run_id is
-        validated and logged but not used as a filter.
+        The state store is the source of truth: a FAILED state means the
+        record is still not correctly in the target, regardless of which run
+        produced it. Replays are safe to repeat — idempotency keys and
+        content hashes make re-exporting an already-fixed record harmless.
+
+        Each failed record is re-fetched from the source first, so upstream
+        fixes are picked up. Runs as a new SyncRun so replay results are
+        tracked like any other run.
         """
-        original_run = await self.sync_run_service.get_run(run_id)
-        if not original_run:
-            raise ValueError(f"Sync run {run_id} not found")
+        await self._authenticate(source_credentials, target_credentials)
 
         failed_states = await self.sync_state_service.get_states_by_status(
             self.tenant_id,
             SyncStateStatus.FAILED,
+            source_connector=self.source.name,
+            target_connector=self.target.name,
         )
 
         self.logger.info(
-            "Replaying %d failed records from run %s",
+            "Replaying %d failed records for tenant %s (%s → %s)",
             len(failed_states),
-            run_id,
+            self.tenant_id,
+            self.source.name,
+            self.target.name,
         )
 
         run = await self.sync_run_service.create_run(tenant_id=self.tenant_id,

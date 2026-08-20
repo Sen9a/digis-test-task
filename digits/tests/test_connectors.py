@@ -12,6 +12,7 @@ from src import (
     RateLimitError,
     RecordNotFoundError,
     SourceAPIConnector,
+    Status,
     TargetAPIConnector,
 )
 from src.models import ExportResult, InvoiceStatus, RawInvoice, UnifiedInvoice
@@ -311,7 +312,7 @@ class TestTargetAPIConnector:
         result = await connector.export_invoice(sample_invoice, "idem-key-123")
 
         assert result.is_success
-        assert result.status == ExportResult.Status.CREATED
+        assert result.status == Status.CREATED
         assert result.target_id == "tgt-1"
         assert result.idempotency_key == "idem-key-123"
 
@@ -330,7 +331,7 @@ class TestTargetAPIConnector:
         result = await connector.export_invoice(sample_invoice, "idem-key-123")
 
         assert result.is_success
-        assert result.status == ExportResult.Status.ALREADY_EXISTS
+        assert result.status == Status.ALREADY_EXISTS
         assert result.target_id == "tgt-1"
 
     async def test_export_invoice_duplicate_conflict(self, connector, service, sample_invoice):
@@ -351,7 +352,7 @@ class TestTargetAPIConnector:
         result = await connector.export_invoice(sample_invoice, "new-key")
 
         assert not result.is_success
-        assert result.status == ExportResult.Status.ALREADY_EXISTS
+        assert result.status == Status.ALREADY_EXISTS
         assert result.error is not None
         assert result.error.code == "DUPLICATE_INVOICE_NUMBER"
 
@@ -387,7 +388,7 @@ class TestTargetAPIConnector:
         result = await connector.update_invoice("tgt-1", sample_invoice)
 
         assert result.is_success
-        assert result.status == ExportResult.Status.UPDATED
+        assert result.status == Status.UPDATED
         assert result.target_id == "tgt-1"
 
     async def test_update_not_found(self, connector, service, sample_invoice):
@@ -423,7 +424,7 @@ class TestTargetAPIConnector:
         result = await connector.export_invoice(sample_invoice, "key-1")
 
         assert not result.is_success
-        assert result.status == ExportResult.Status.FAILED
+        assert result.status == Status.FAILED
         assert result.error is not None
         assert result.error.category == ErrorCategory.RETRYABLE
         assert result.is_retryable
@@ -443,7 +444,7 @@ class TestTargetAPIConnector:
         result = await connector.export_invoice(sample_invoice, "key-1")
 
         assert not result.is_success
-        assert result.status == ExportResult.Status.FAILED
+        assert result.status == Status.FAILED
         assert result.error is not None
         assert result.error.category == ErrorCategory.PERMANENT
         assert not result.is_retryable

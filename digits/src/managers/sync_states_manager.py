@@ -69,6 +69,8 @@ class SyncStatesManager(BaseManager):
         self,
         tenant_id: str,
         status: SyncStateStatus,
+        source_connector: str | None = None,
+        target_connector: str | None = None,
     ) -> Sequence[Row[tuple[Any]]]:
         """Get all states with a given status for a tenant."""
         async with self._session_factory() as session:
@@ -76,6 +78,14 @@ class SyncStatesManager(BaseManager):
                 sync_states_table.c.tenant_id == tenant_id,
                 sync_states_table.c.status == status.value,
             )
+            if source_connector is not None:
+                stmt = stmt.where(
+                    sync_states_table.c.source_connector == source_connector
+                )
+            if target_connector is not None:
+                stmt = stmt.where(
+                    sync_states_table.c.target_connector == target_connector
+                )
             result = await session.execute(stmt)
             rows = result.fetchall()
             return rows
