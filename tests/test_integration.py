@@ -47,8 +47,6 @@ def engine(source, target, state_store):
         target=target,
         store=state_store,
         tenant_id="tenant-integration",
-        max_retries=2,
-        retry_base_delay=0.1,
     )
 
 

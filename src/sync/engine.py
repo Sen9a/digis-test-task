@@ -1,14 +1,22 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
 
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
+
 from src.abstract import SourceConnector, TargetConnector
-from src.abstract.exceptions import (
+from exceptions import (
     AuthenticationError,
     RateLimitError,
+    RetryableExportError,
     SourceUnavailableError,
 )
 from src.const import ErrorCategory
@@ -22,6 +30,7 @@ from src.models import (
     UnifiedInvoice,
 )
 from src.sync.state import StateStore
+from settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +52,6 @@ class SyncEngine:
     target: TargetConnector
     store: StateStore
     tenant_id: str
-    max_retries: int = 3
-    retry_base_delay: float = 1.0
 
     async def run(
         self,
@@ -198,84 +205,77 @@ class SyncEngine:
             self.store.save_state(state)
             run.records_failed += 1
 
+    @retry(
+        stop=stop_after_attempt(settings.max_retries + 1),
+        wait=wait_exponential(multiplier=settings.retry_base_delay,
+                              min=settings.retry_base_delay,
+                              max=60),
+        retry=retry_if_exception_type((RateLimitError, RetryableExportError)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    async def _do_export(
+        self,
+        invoice: UnifiedInvoice,
+        state: SyncState,
+    ) -> ExportResult:
+        """
+        Single export attempt with tenacity retry.
+
+        Raises:
+            RateLimitError: On 429 rate limit.
+            RetryableExportError: On retryable ExportResult failure.
+
+        Returns:
+            ExportResult on success or permanent (non-retryable) failure.
+        """
+        idempotency_key = self._build_idempotency_key(invoice)
+
+        if (
+            state.target_record_id
+            and self.target.supports_update
+            and state.status == SyncStateStatus.EXPORTED
+        ):
+            result = await self.target.update_invoice(
+                state.target_record_id,
+                invoice,
+            )
+        else:
+            result = await self.target.export_invoice(
+                invoice,
+                idempotency_key,
+            )
+
+        if not result.is_success and result.is_retryable:
+            raise RetryableExportError(result)
+
+        return result
+
     async def export(
         self,
         invoice: UnifiedInvoice,
         state: SyncState,
     ) -> ExportResult:
         """
-        Export invoice to target with retry logic.
+        Export invoice to target.
 
-        Uses exponential backoff for retryable errors and rate limits.
+        Calls _do_export which has tenacity retry built in.
+        Catches final failures and converts to ExportResult.
         """
-        idempotency_key = self._build_idempotency_key(invoice)
-
-        for attempt in range(self.max_retries + 1):
-            try:
-                # Decide: update existing or create new
-                if (
-                    state.target_record_id
-                    and self.target.supports_update
-                    and state.status == SyncStateStatus.EXPORTED
-                ):
-                    result = await self.target.update_invoice(
-                        state.target_record_id,
-                        invoice,
-                    )
-                else:
-                    result = await self.target.export_invoice(
-                        invoice,
-                        idempotency_key,
-                    )
-
-                # If success or permanent error, return immediately
-                if result.is_success or not result.is_retryable:
-                    return result
-
-                # Retryable error — wait and retry
-                if attempt < self.max_retries:
-                    delay = self.retry_base_delay * (2 ** attempt)
-                    logger.warning(
-                        "Retryable error exporting %s (attempt %d/%d), retrying in %.1fs: %s",
-                        invoice.external_id,
-                        attempt + 1,
-                        self.max_retries + 1,
-                        delay,
-                        result.error.message if result.error else "unknown",
-                    )
-                    await asyncio.sleep(delay)
-
-            except RateLimitError as e:
-                if attempt < self.max_retries:
-                    delay = e.retry_after_seconds or (self.retry_base_delay * (2 ** attempt))
-                    logger.warning(
-                        "Rate limited exporting %s (attempt %d/%d), waiting %.1fs",
-                        invoice.external_id,
-                        attempt + 1,
-                        self.max_retries + 1,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    return ExportResult(
-                        status=ExportResult.Status.CREATED,
-                        error=SyncError(
-                            category=ErrorCategory.RETRYABLE,
-                            code="RATE_LIMITED",
-                            message=f"Rate limited after {self.max_retries + 1} attempts",
-                            retry_after_seconds=e.retry_after_seconds,
-                        ),
-                    )
-
-        # Exhausted all retries
-        return ExportResult(
-            status=ExportResult.Status.CREATED,
-            error=SyncError(
-                category=ErrorCategory.RETRYABLE,
-                code="MAX_RETRIES",
-                message=f"Failed after {self.max_retries + 1} attempts",
-            ),
-        )
+        try:
+            return await self._do_export(invoice, state)
+        except RetryableExportError as e:
+            return e.result
+        except RateLimitError as e:
+            return ExportResult(
+                status=ExportResult.Status.CREATED,
+                error=SyncError(
+                    category=ErrorCategory.RETRYABLE,
+                    code="RATE_LIMITED",
+                    message=f"Rate limited after {settings.max_retries + 1} attempts",
+                    retry_after_seconds=e.retry_after_seconds,
+                ),
+            )
 
     def _build_idempotency_key(self, invoice: UnifiedInvoice) -> str:
         """

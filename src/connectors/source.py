@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from src.abstract import SourceConnector
-from src.abstract.exceptions import (
+from exceptions import (
     AuthenticationError,
     NormalizationError,
     RateLimitError,

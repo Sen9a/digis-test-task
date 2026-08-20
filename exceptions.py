@@ -1,3 +1,5 @@
+from src.models import ExportResult
+
 class ConnectorError(Exception):
     """Base exception for connector errors."""
 
@@ -34,3 +36,10 @@ class NotSupportedError(ConnectorError):
     """Operation not supported by this connector."""
 
     pass
+
+class RetryableExportError(Exception):
+    """Raised when export returns a retryable result, so tenacity can retry."""
+
+    def __init__(self, result: ExportResult):
+        self.result = result
+        super().__init__(result.error.message if result.error else "Retryable error")

@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from src.abstract import TargetConnector
-from src.abstract.exceptions import (
+from exceptions import (
     AuthenticationError,
-    NotSupportedError,
     RateLimitError,
 )
 from src.clients.api_client import APIClient

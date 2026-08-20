@@ -1,4 +1,4 @@
-from src.abstract.exceptions import (
+from exceptions import (
     AuthenticationError,
     ConnectorError,
     NormalizationError,

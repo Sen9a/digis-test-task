@@ -121,8 +121,6 @@ def engine(source_connector, target_connector, state_store):
         target=target_connector,
         store=state_store,
         tenant_id="tenant-1",
-        max_retries=2,
-        retry_base_delay=0.01,
     )
 
 
@@ -168,7 +166,6 @@ class TestSyncEngine:
         engine1 = SyncEngine(
             source=source1, target=target1,
             store=state_store, tenant_id="tenant-1",
-            max_retries=2, retry_base_delay=0.01,
         )
 
         creds = {"api_key": "***"}
@@ -184,7 +181,6 @@ class TestSyncEngine:
         engine2 = SyncEngine(
             source=source2, target=target2,
             store=state_store, tenant_id="tenant-1",
-            max_retries=2, retry_base_delay=0.01,
         )
 
         run2 = await engine2.run(source_credentials=creds, target_credentials=creds)
@@ -211,7 +207,6 @@ class TestSyncEngine:
         engine1 = SyncEngine(
             source=source1, target=target1,
             store=state_store, tenant_id="tenant-1",
-            max_retries=2, retry_base_delay=0.01,
         )
         run1 = await engine1.run(source_credentials=creds, target_credentials=creds)
         assert run1.records_succeeded == 3
@@ -235,7 +230,6 @@ class TestSyncEngine:
         engine2 = SyncEngine(
             source=source2, target=target2,
             store=state_store, tenant_id="tenant-1",
-            max_retries=2, retry_base_delay=0.01,
         )
         run2 = await engine2.run(source_credentials=creds, target_credentials=creds)
 
@@ -298,7 +292,6 @@ class TestSyncEngine:
         engine1 = SyncEngine(
             source=source, target=target,
             store=store1, tenant_id="tenant-1",
-            retry_base_delay=0.01,
         )
 
         await engine1.run(source_credentials=creds, target_credentials=creds)
@@ -322,7 +315,6 @@ class TestSyncEngine:
         engine = SyncEngine(
             source=source, target=target,
             store=state_store, tenant_id="tenant-1",
-            retry_base_delay=0.01,
         )
 
         run = await engine.run(
@@ -407,7 +399,6 @@ class TestSyncEngineWithPagination:
         engine = SyncEngine(
             source=source, target=target,
             store=state_store, tenant_id="tenant-1",
-            retry_base_delay=0.01,
         )
 
         creds = {"api_key": "***"}
