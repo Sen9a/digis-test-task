@@ -18,7 +18,7 @@ from src.connectors.target import TargetAPIConnector
 from src.managers import SyncRunManager, SyncStatesManager
 from src.services import SyncRunService, SyncStateService
 from src.services.aiohttp_service import AiohttpAPIService
-from settings import Settings
+from settings import  settings
 from src.sync.engine import SyncEngine
 
 logging.basicConfig(
@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> int:
-    settings = Settings()
 
     logger.info(
         "Starting sync: %s → %s (tenant: %s)",

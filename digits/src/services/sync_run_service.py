@@ -12,8 +12,8 @@ class SyncRunService:
     logger: logging.Logger
 
     @staticmethod
-    def _row_to_run_state(row) -> SyncState:
-        """Convert a database row to a SyncState Pydantic model."""
+    def _row_to_run_state(row) -> SyncRun:
+        """Convert a database row to a SyncRun Pydantic model."""
         return SyncRun(
                 id=row.id,
                 tenant_id=row.tenant_id,

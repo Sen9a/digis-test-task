@@ -8,7 +8,7 @@ from exceptions import (
     RateLimitError,
 )
 from src.clients.api_client import APIClient
-from src.const import ErrorCategory
+from src.const import ErrorCategory, Status
 from src.models import ExportResult, SyncError, UnifiedInvoice
 
 
@@ -94,7 +94,7 @@ class TargetAPIConnector(TargetConnector):
 
         if status == 409:
             return ExportResult(
-                status=ExportResult.Status.ALREADY_EXISTS,
+                status=Status.ALREADY_EXISTS,
                 target_id=body.get("existing_id"),
                 idempotency_key=idempotency_key,
                 error=SyncError(
@@ -108,7 +108,7 @@ class TargetAPIConnector(TargetConnector):
         if status == 200:
             # Idempotent replay — already exists
             return ExportResult(
-                status=ExportResult.Status.ALREADY_EXISTS,
+                status=Status.ALREADY_EXISTS,
                 target_id=body.get("id"),
                 idempotency_key=idempotency_key,
                 response_data=body,
@@ -116,7 +116,7 @@ class TargetAPIConnector(TargetConnector):
 
         if status == 201:
             return ExportResult(
-                status=ExportResult.Status.CREATED,
+                status=Status.CREATED,
                 target_id=body.get("id"),
                 idempotency_key=idempotency_key,
                 response_data=body,
@@ -127,7 +127,7 @@ class TargetAPIConnector(TargetConnector):
             ErrorCategory.RETRYABLE if status >= 500 else ErrorCategory.PERMANENT
         )
         return ExportResult(
-            status=ExportResult.Status.FAILED,
+            status=Status.FAILED,
             error=SyncError(
                 category=category,
                 code=f"HTTP_{status}",
@@ -156,7 +156,7 @@ class TargetAPIConnector(TargetConnector):
 
         if status == 404:
             return ExportResult(
-                status=ExportResult.Status.FAILED,
+                status=Status.FAILED,
                 error=SyncError(
                     category=ErrorCategory.PERMANENT,
                     code="NOT_FOUND",
@@ -166,7 +166,7 @@ class TargetAPIConnector(TargetConnector):
 
         if status == 200:
             return ExportResult(
-                status=ExportResult.Status.UPDATED,
+                status=Status.UPDATED,
                 target_id=target_id,
                 response_data=body,
             )
@@ -175,7 +175,7 @@ class TargetAPIConnector(TargetConnector):
             ErrorCategory.RETRYABLE if status >= 500 else ErrorCategory.PERMANENT
         )
         return ExportResult(
-            status=ExportResult.Status.FAILED,
+            status=Status.FAILED,
             error=SyncError(
                 category=category,
                 code=f"HTTP_{status}",

@@ -57,8 +57,16 @@ class SyncStateService:
     async def save_state(self, state: SyncState) -> None:
         await self.manager.save_state(state)
 
-    async def get_states_by_status(self, tenant_id: str, status: SyncStateStatus) -> list[SyncState]:
-        rows = await self.manager.get_states_by_status(tenant_id, status)
+    async def get_states_by_status(
+        self,
+        tenant_id: str,
+        status: SyncStateStatus,
+        source_connector: str | None = None,
+        target_connector: str | None = None,
+    ) -> list[SyncState]:
+        rows = await self.manager.get_states_by_status(
+            tenant_id, status, source_connector, target_connector
+        )
         return [self._row_to_sync_state(row) for row in rows]
 
     async def get_all_states(self, tenant_id: str) -> list[SyncState]:

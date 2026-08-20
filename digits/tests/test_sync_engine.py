@@ -8,7 +8,7 @@ import pytest
 from src.clients.api_client import APIClient
 from src.connectors.source import SourceAPIConnector
 from src.connectors.target import TargetAPIConnector
-from src.const import ErrorCategory
+from src.const import ErrorCategory, Status
 from src.db.engine import create_engine, create_session_factory, init_db
 from exceptions import RateLimitError, RetryableExportError
 from src.managers import SyncRunManager, SyncStatesManager
@@ -20,7 +20,8 @@ from src.models import (
 )
 from src.services import SyncRunService, SyncStateService
 from src.services.fake_service import FakeAPIService
-from src.sync.engine import SyncEngine, wait_retry_after_aware
+from src.sync.engine import SyncEngine
+from src.utils import wait_retry_after_aware
 from settings import settings
 
 AUTH_RESPONSE = {"token": "***", "expires_in": 3600}
@@ -499,6 +500,68 @@ class TestSyncEngine:
         assert state.target_record_id == "tgt-1"  # link preserved
         assert state.last_error is not None
 
+    async def test_replay_failed(self, sync_run_service, sync_state_service):
+        """replay_failed reprocesses only FAILED states, re-fetching from source."""
+        creds = {"api_key": "***"}
+
+        # Run 1: two invoices export, one is rejected permanently (400)
+        source_svc1 = FakeAPIService()
+        target_svc1 = FakeAPIService()
+        source1 = _make_source(source_svc1)
+        target1 = _make_target(target_svc1)
+        target_svc1.add_response(
+            "POST", "/invoices", {"id": "tgt-1", "status": "created"}, status=201,
+        )
+        target_svc1.add_response(
+            "POST", "/invoices", {"id": "tgt-2", "status": "created"}, status=201,
+        )
+        target_svc1.add_response(
+            "POST", "/invoices", {"detail": "Validation failed"}, status=400,
+        )
+        engine1 = SyncEngine(
+            source=source1, target=target1,
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
+        )
+        run1 = await engine1.run(source_credentials=creds, target_credentials=creds)
+        assert run1.records_succeeded == 2
+        assert run1.records_failed == 1
+
+        # Replay: source now serves the fixed invoice, target accepts it
+        source_svc2 = FakeAPIService()
+        source_svc2.add_response("POST", "/auth/token", AUTH_RESPONSE)
+        source_svc2.add_response("GET", "/invoices/inv-003", SAMPLE_INVOICES[2])
+        source2 = SourceAPIConnector(APIClient(source_svc2))
+
+        target_svc2 = FakeAPIService()
+        target_svc2.add_response("POST", "/auth/token", AUTH_RESPONSE)
+        target_svc2.add_response(
+            "POST", "/invoices", {"id": "tgt-3", "status": "created"}, status=201,
+        )
+        target2 = TargetAPIConnector(APIClient(target_svc2))
+
+        engine2 = SyncEngine(
+            source=source2, target=target2,
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
+        )
+        replay_run = await engine2.replay_failed(
+            source_credentials=creds, target_credentials=creds
+        )
+
+        assert replay_run.records_processed == 1
+        assert replay_run.records_succeeded == 1
+        assert replay_run.records_failed == 0
+
+        state = await sync_state_service.get_state("tenant-1", "source_api", "inv-003")
+        assert state is not None
+        assert state.status == SyncStateStatus.EXPORTED
+        assert state.target_record_id == "tgt-3"
+
 
 class _FakeOutcome:
     def __init__(self, exc):
@@ -529,7 +592,7 @@ class TestWaitStrategy:
 
     def test_exponential_backoff_for_other_retryable_errors(self):
         result = ExportResult(
-            status=ExportResult.Status.FAILED,
+            status=Status.FAILED,
             error=SyncError(
                 category=ErrorCategory.RETRYABLE,
                 code="HTTP_500",

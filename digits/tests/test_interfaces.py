@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import date
 
 from src import SourceConnector, TargetConnector
-from src.const import ErrorCategory
+from src.const import ErrorCategory, Status
 from src.models import ExportResult, InvoiceStatus, SyncError, UnifiedInvoice
 
 
@@ -55,7 +55,7 @@ class TestConnectorInterfaces:
     def test_export_result_success(self):
         """ExportResult correctly identifies success."""
         result = ExportResult(
-            status=ExportResult.Status.CREATED,
+            status=Status.CREATED,
             target_id="target-123",
         )
         assert result.is_success
@@ -63,11 +63,8 @@ class TestConnectorInterfaces:
 
     def test_export_result_retryable(self):
         """ExportResult correctly identifies retryable errors."""
-        from src.const import ErrorCategory
-        from src.models import SyncError
-
         result = ExportResult(
-            status=ExportResult.Status.CREATED,
+            status=Status.CREATED,
             error=SyncError(
                 category=ErrorCategory.RETRYABLE,
                 code="RATE_LIMITED",

@@ -49,11 +49,12 @@ digits-test-task/
 │   │   ├── managers/           # SQLAlchemy Core persistence layer
 │   │   ├── db/                 # Table definitions, async engine
 │   │   ├── sync/               # SyncEngine
-│   │   └── const.py            # ErrorCategory enum
+│   │   ├── utils.py            # Retry-After-aware tenacity wait strategy
+│   │   └── const.py            # ErrorCategory, Status enums
 │   │
 │   ├── migrations/             # Alembic migrations (sync_states, sync_runs)
 │   │
-│   └── tests/                  # 43 tests (unit + integration)
+│   └── tests/                  # 44 tests (unit + integration)
 │
 └── fake_apis/
     ├── source_api/             # Fake invoicing system (port 8001)
@@ -163,7 +164,7 @@ Environment variables for the orchestrator:
 
 | Decision | Trade-off | Rationale |
 |----------|-----------|-----------|
-| Connectors as libraries, not microservices | Less isolation vs. simpler deployment | 8-hour constraint; connectors are dumb pipes, platform owns orchestration |
+| Connectors as libraries, not microservices | Less isolation vs. simpler deployment | Connectors are dumb pipes, platform owns orchestration |
 | PostgreSQL state store | Extra infrastructure vs. durability and restart-safe resume | Sync state must survive restarts for replay/recovery to be meaningful; unique constraint also gives a hard guarantee against double export |
 | Content hash for change detection | Computation cost vs. reliability | Clocks lie (clock skew); hashes don't. Prevents unnecessary API calls. |
 | Session-per-request HTTP | Connection overhead vs. lifecycle simplicity | No connection pool management needed; acceptable for exercise scale |
@@ -172,7 +173,7 @@ Environment variables for the orchestrator:
 
 | Alternative | Rejected Because |
 |-------------|-----------------|
-| Microservices for each connector | Over-engineering for 8-hour exercise; adds deployment complexity without demonstrating core competencies |
+| Microservices for each connector | Over-engineering for this scope; adds deployment complexity without demonstrating core competencies |
 | Separate normalizer service | Normalization is a pure function; no I/O, no benefit from isolation |
 | Celery/Redis for async processing | Adds infrastructure complexity; synchronous processing sufficient to demonstrate idempotency and error handling |
 | In-memory state store | Cannot survive restarts; replay and idempotency guarantees become meaningless across deployments |
@@ -183,7 +184,7 @@ Environment variables for the orchestrator:
 2. **No reconciliation report** — Can trace individual invoices (sync_states maps source ↔ target record IDs) but no automated source-vs-target comparison
 3. **No distributed locking** — Single-node only
 4. **No schema versioning** — Connector changes require deployment
-5. **Replay is tenant-scoped** — `replay_failed(run_id)` validates the run but reprocesses all FAILED states for the tenant (states don't record which run they belonged to)
+5. **Replay is tenant-scoped** — `replay_failed()` reprocesses all FAILED states for the tenant and its connector pair (states don't record which run they belonged to)
 6. **Source-side fetches are not retried** — Retry with backoff (honoring `Retry-After`) applies to target exports; a rate-limited or unavailable source aborts the run, which can simply be re-run safely
 
 ### Next Production Improvements

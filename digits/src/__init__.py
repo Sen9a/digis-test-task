@@ -11,7 +11,7 @@ from src.abstract import (
 )
 from src.clients import APIClient
 from src.connectors import SourceAPIConnector, TargetAPIConnector
-from src.const import ErrorCategory
+from src.const import ErrorCategory, Status
 from src.models import (
     Cursor,
     CustomerRef,
@@ -50,6 +50,7 @@ __all__ = [
     "UnifiedInvoice",
     # Constants
     "ErrorCategory",
+    "Status",
     # Exceptions
     "ConnectorError",
     "AuthenticationError",

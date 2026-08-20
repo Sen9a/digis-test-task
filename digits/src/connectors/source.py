@@ -4,7 +4,6 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from src import CustomerRef
 from src.abstract import SourceConnector
 from exceptions import (
     AuthenticationError,
@@ -16,6 +15,7 @@ from exceptions import (
 from src.clients.api_client import APIClient
 from src.models import (
     Cursor,
+    CustomerRef,
     FetchResult,
     InvoiceStatus,
     RawInvoice,
