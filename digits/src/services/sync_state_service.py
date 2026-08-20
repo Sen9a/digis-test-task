@@ -2,8 +2,8 @@ import logging
 
 from dataclasses import dataclass
 
-from managers.sync_states_manager import SyncStatesManager
-from models import SyncState, SyncStateStatus
+from src.managers.sync_states_manager import SyncStatesManager
+from src.models import SyncState, SyncStateStatus
 
 
 @dataclass
@@ -59,6 +59,10 @@ class SyncStateService:
 
     async def get_states_by_status(self, tenant_id: str, status: SyncStateStatus) -> list[SyncState]:
         rows = await self.manager.get_states_by_status(tenant_id, status)
+        return [self._row_to_sync_state(row) for row in rows]
+
+    async def get_all_states(self, tenant_id: str) -> list[SyncState]:
+        rows = await self.manager.get_all_states(tenant_id)
         return [self._row_to_sync_state(row) for row in rows]
 
     async def count_states(self, tenant_id: str) -> dict[str, str]:

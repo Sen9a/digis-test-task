@@ -2,8 +2,8 @@ import logging
 
 from dataclasses import dataclass
 
-from managers.sync_run_manager import SyncRunManager
-from models import SyncRun, SyncRunStatus
+from src.managers.sync_run_manager import SyncRunManager
+from src.models import SyncRun, SyncRunStatus
 
 
 @dataclass

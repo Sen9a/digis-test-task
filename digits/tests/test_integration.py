@@ -8,31 +8,55 @@ Run with:
     pytest tests/test_integration.py -v
 """
 
+import logging
+
 import pytest
 
 from src.clients.api_client import APIClient
 from src.connectors.source import SourceAPIConnector
 from src.connectors.target import TargetAPIConnector
 from src.db.engine import create_engine, create_session_factory, init_db
+from src.managers import SyncRunManager, SyncStatesManager
+from src.services import SyncRunService, SyncStateService
 from src.services.aiohttp_service import AiohttpAPIService
 from src.sync.engine import SyncEngine
-from src.sync.pg_state import PostgresStateStore
 
 SOURCE_URL = "http://localhost:8001"
 TARGET_URL = "http://localhost:8002"
 
 
 @pytest.fixture
-async def state_store():
-    """Create a BaseManager with its own engine, ensure tables exist."""
+async def db_engine():
     engine = create_engine()
     await init_db(engine)
-    session_factory = create_session_factory(engine)
-    store = PostgresStateStore(session_factory=session_factory)
-    await store.clear()
-    yield store
-    await store.clear()
+    yield engine
     await engine.dispose()
+
+
+@pytest.fixture
+async def sync_state_service(db_engine):
+    session_factory = create_session_factory(db_engine)
+    manager = SyncStatesManager(session_factory=session_factory)
+    await manager.clear()
+    service = SyncStateService(
+        manager=manager,
+        logger=logging.getLogger("test.sync_state"),
+    )
+    yield service
+    await manager.clear()
+
+
+@pytest.fixture
+async def sync_run_service(db_engine):
+    session_factory = create_session_factory(db_engine)
+    manager = SyncRunManager(session_factory=session_factory)
+    await manager.clear()
+    service = SyncRunService(
+        manager=manager,
+        logger=logging.getLogger("test.sync_run"),
+    )
+    yield service
+    await manager.clear()
 
 
 @pytest.fixture
@@ -50,12 +74,14 @@ def target():
 
 
 @pytest.fixture
-async def engine(source, target, state_store):
+def engine(source, target, sync_run_service, sync_state_service):
     return SyncEngine(
         source=source,
         target=target,
-        store=state_store,
+        sync_run_service=sync_run_service,
+        sync_state_service=sync_state_service,
         tenant_id="tenant-integration",
+        logger=logging.getLogger("test.engine"),
     )
 
 
@@ -63,7 +89,7 @@ async def engine(source, target, state_store):
 class TestIntegrationSync:
     """End-to-end sync tests using real HTTP calls to fake APIs."""
 
-    async def test_full_sync_over_http(self, engine, state_store):
+    async def test_full_sync_over_http(self, engine, sync_state_service):
         """Full sync: fetch from source API → normalize → export to target API."""
         run = await engine.run(
             source_credentials={"api_key": "***"},
@@ -77,14 +103,14 @@ class TestIntegrationSync:
         assert run.records_failed == 0
 
         # Verify state tracking
-        states = await state_store.get_all_states("tenant-integration")
+        states = await sync_state_service.get_all_states("tenant-integration")
         assert len(states) == run.records_processed
 
         for state in states:
             assert state.status.value == "exported"
             assert state.target_record_id is not None
 
-    async def test_sync_idempotency_over_http(self, engine, state_store):
+    async def test_sync_idempotency_over_http(self, engine, sync_state_service):
         """Second sync should skip all unchanged invoices."""
         creds = {"api_key": "***"}
 

@@ -12,7 +12,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from services import SyncRunService, SyncStateService
+from src.services import SyncRunService, SyncStateService
 from src.abstract import SourceConnector, TargetConnector
 from exceptions import (
     AuthenticationError,
@@ -198,7 +198,7 @@ class SyncEngine:
                               min=settings.retry_base_delay,
                               max=60),
         retry=retry_if_exception_type((RateLimitError, RetryableExportError)),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
+        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True,
     )
     async def _do_export(
@@ -303,20 +303,13 @@ class SyncEngine:
         for state in failed_states:
             run.records_processed += 1
             try:
-                # TODO: Re-fetch from source by ID instead of using placeholder
-                result = await self.export(
-                    UnifiedInvoice(
-                        external_id=state.source_record_id,
-                        invoice_number="",
-                        customer={"external_id": ""},
-                        currency="USD",
-                        total=0,
-                        tax_total=0,
-                        status="draft",
-                        issue_date="2024-01-01",
-                    ),
-                    state,
-                )
+                # Re-fetch the real invoice from source
+                raw = await self.source.fetch_invoice_by_id(state.source_record_id)
+                unified = self.source.normalize(raw)
+                unified = unified.with_content_hash()
+                state.content_hash = unified.content_hash or ""
+
+                result = await self.export(unified, state)
 
                 if result.is_success:
                     state.mark_exported(result.target_id or "")

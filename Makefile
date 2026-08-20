@@ -63,6 +63,9 @@ logs-orchestrator:
 db:
 	docker compose up -d postgres
 
+migrate:
+	cd digits && poetry run python -m scripts.migrate
+
 db-logs:
 	docker compose logs -f postgres
 
