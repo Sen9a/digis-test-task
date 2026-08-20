@@ -15,10 +15,11 @@ import sys
 from src.clients.api_client import APIClient
 from src.connectors.source import SourceAPIConnector
 from src.connectors.target import TargetAPIConnector
+from src.db.engine import init_db
 from src.services.aiohttp_service import AiohttpAPIService
 from settings import Settings
 from src.sync.engine import SyncEngine
-from src.sync.state import StateStore
+from src.sync.pg_state import PostgresStateStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +38,10 @@ async def main() -> int:
         settings.tenant_id,
     )
 
+    # Initialize database tables
+    await init_db()
+    logger.info("Database initialized")
+
     # Build connectors
     source = SourceAPIConnector(
         APIClient(AiohttpAPIService(base_url=settings.source_api_url))
@@ -46,7 +51,7 @@ async def main() -> int:
     )
 
     # Run sync
-    store = StateStore()
+    store = PostgresStateStore()
     engine = SyncEngine(
         source=source,
         target=target,
@@ -78,7 +83,7 @@ async def main() -> int:
     print("=" * 60)
 
     # Print state summary
-    counts = store.count_states(settings.tenant_id)
+    counts = await store.count_states(settings.tenant_id)
     if counts:
         print("\n  State breakdown:")
         for status, count in sorted(counts.items()):
@@ -88,7 +93,7 @@ async def main() -> int:
     if run.records_failed > 0:
         from src.models import SyncStateStatus
 
-        failed = store.get_states_by_status(
+        failed = await store.get_states_by_status(
             settings.tenant_id, SyncStateStatus.FAILED
         )
         print("\n  Failed records:")

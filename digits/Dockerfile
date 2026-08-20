@@ -8,6 +8,6 @@ RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --only main --no-root
 
 COPY src/ src/
-COPY main.py .
+COPY main.py settings.py exceptions.py .
 
 CMD ["python", "-m", "main"]

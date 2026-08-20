@@ -59,6 +59,13 @@ logs-target:
 logs-orchestrator:
 	docker compose logs -f orchestrator
 
+# Database
+db:
+	docker compose up -d postgres
+
+db-logs:
+	docker compose logs -f postgres
+
 # Run sync once
 run:
 	docker compose up orchestrator

@@ -61,3 +61,4 @@ class SyncState(BaseModel):
         """Mark as skipped (unchanged)."""
         self.status = SyncStateStatus.SKIPPED_UNCHANGED
         self.updated_at = datetime.now(UTC)
+

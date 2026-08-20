@@ -1,7 +1,7 @@
 """
-Integration test: full sync over HTTP using real connectors.
+Integration test: full sync over HTTP using real connectors and PostgreSQL.
 
-Requires fake APIs running:
+Requires fake APIs and PostgreSQL running:
     docker compose up -d
 
 Run with:
@@ -13,17 +13,26 @@ import pytest
 from src.clients.api_client import APIClient
 from src.connectors.source import SourceAPIConnector
 from src.connectors.target import TargetAPIConnector
+from src.db.engine import create_engine, create_session_factory, init_db
 from src.services.aiohttp_service import AiohttpAPIService
 from src.sync.engine import SyncEngine
-from src.sync.state import StateStore
+from src.sync.pg_state import PostgresStateStore
 
 SOURCE_URL = "http://localhost:8001"
 TARGET_URL = "http://localhost:8002"
 
 
 @pytest.fixture
-def state_store():
-    return StateStore()
+async def state_store():
+    """Create a BaseManager with its own engine, ensure tables exist."""
+    engine = create_engine()
+    await init_db(engine)
+    session_factory = create_session_factory(engine)
+    store = PostgresStateStore(session_factory=session_factory)
+    await store.clear()
+    yield store
+    await store.clear()
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -41,7 +50,7 @@ def target():
 
 
 @pytest.fixture
-def engine(source, target, state_store):
+async def engine(source, target, state_store):
     return SyncEngine(
         source=source,
         target=target,
@@ -68,7 +77,7 @@ class TestIntegrationSync:
         assert run.records_failed == 0
 
         # Verify state tracking
-        states = state_store.get_all_states("tenant-integration")
+        states = await state_store.get_all_states("tenant-integration")
         assert len(states) == run.records_processed
 
         for state in states:

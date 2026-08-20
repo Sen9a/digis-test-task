@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     # Tenant
     tenant_id: str = "demo-tenant"
 
+    # Database
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/digits"
+
     # Sync behavior
     batch_size: int = 10
     max_retries: int = 3

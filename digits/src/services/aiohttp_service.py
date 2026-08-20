@@ -2,7 +2,7 @@ from typing import Any
 
 import aiohttp
 
-from src.services.base import APIService
+from abstract.api_service import APIService
 
 
 class AiohttpAPIService(APIService):

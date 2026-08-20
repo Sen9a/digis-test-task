@@ -1,6 +1,6 @@
 from typing import Any
 
-from src.services.base import APIService
+from abstract.api_service import APIService
 
 
 class FakeAPIService(APIService):

@@ -12,6 +12,7 @@ from tenacity import (
     before_sleep_log,
 )
 
+from services import SyncRunService, SyncStateService
 from src.abstract import SourceConnector, TargetConnector
 from exceptions import (
     AuthenticationError,
@@ -29,11 +30,7 @@ from src.models import (
     SyncStateStatus,
     UnifiedInvoice,
 )
-from src.sync.state import StateStore
 from settings import settings
-
-logger = logging.getLogger(__name__)
-
 
 @dataclass
 class SyncEngine:
@@ -50,8 +47,10 @@ class SyncEngine:
     """
     source: SourceConnector
     target: TargetConnector
-    store: StateStore
+    sync_run_service: SyncRunService
+    sync_state_service: SyncStateService
     tenant_id: str
+    logger: 'logging.getLogger'
 
     async def run(
         self,
@@ -72,21 +71,9 @@ class SyncEngine:
         Returns:
             SyncRun with results
         """
-        run = SyncRun(
-            tenant_id=self.tenant_id,
-            source_connector=self.source.name,
-            target_connector=self.target.name,
-        )
-        self.store.create_run(run)
-
-        logger.info(
-            "Starting sync run %s for tenant %s: %s → %s",
-            run.id,
-            self.tenant_id,
-            self.source.name,
-            self.target.name,
-        )
-
+        run = await self.sync_run_service.create_run(tenant_id=self.tenant_id,
+                                                     source_connector=self.source.name,
+                                                     target_connector=self.target.name)
         try:
             await self._authenticate(source_credentials, target_credentials)
 
@@ -98,7 +85,7 @@ class SyncEngine:
                 await self._process_invoice(raw, run)
 
             run.complete()
-            logger.info(
+            self.logger.info(
                 "Sync run %s completed: %d processed, %d succeeded, %d failed, %d skipped",
                 run.id,
                 run.records_processed,
@@ -108,13 +95,13 @@ class SyncEngine:
             )
 
         except (AuthenticationError, SourceUnavailableError) as e:
-            logger.error("Sync run %s failed: %s", run.id, e)
+            self.logger.error("Sync run %s failed: %s", run.id, e)
             run.fail()
         except Exception:
-            logger.exception("Sync run %s failed unexpectedly", run.id)
+            self.logger.exception("Sync run %s failed unexpectedly", run.id)
             run.fail()
 
-        self.store.update_run(run)
+        await self.sync_run_service.update_run(run)
         return run
 
     async def _authenticate(
@@ -146,7 +133,7 @@ class SyncEngine:
             unified = unified.with_content_hash()
 
             # Check existing state
-            existing = self.store.get_state(
+            existing = await self.sync_state_service.get_state(
                 self.tenant_id,
                 self.source.name,
                 source_record_id,
@@ -158,19 +145,19 @@ class SyncEngine:
                 and existing.content_hash == unified.content_hash
                 and existing.status == SyncStateStatus.EXPORTED
             ):
-                logger.debug("Skipping unchanged invoice %s", source_record_id)
+                self.logger.debug("Skipping unchanged invoice %s", source_record_id)
                 existing.mark_skipped()
-                self.store.save_state(existing)
+                await self.sync_state_service.save_state(existing)
                 run.records_skipped += 1
                 return
 
             # Create or update state
-            state = existing or SyncState(
+            state = existing or await self.sync_state_service.sync_state(
                 tenant_id=self.tenant_id,
-                source_connector=self.source.name,
+                source_name=self.source.name,
                 source_record_id=source_record_id,
-                target_connector=self.target.name,
-                content_hash=unified.content_hash or "",
+                target_name=self.target.name,
+                content_hash=unified.content_hash
             )
             state.content_hash = unified.content_hash or ""
 
@@ -190,19 +177,19 @@ class SyncEngine:
                 state.mark_failed(error_msg)
                 run.records_failed += 1
 
-            self.store.save_state(state)
+            await self.sync_state_service.save_state(state)
 
         except Exception as e:
-            logger.error("Failed to process invoice %s: %s", source_record_id, e)
-            state = SyncState(
+            self.logger.error("Failed to process invoice %s: %s", source_record_id, e)
+            state = await self.sync_state_service.sync_state(
                 tenant_id=self.tenant_id,
-                source_connector=self.source.name,
+                source_name=self.source.name,
                 source_record_id=source_record_id,
-                target_connector=self.target.name,
+                target_name=self.target.name,
                 content_hash="",
             )
             state.mark_failed(str(e))
-            self.store.save_state(state)
+            await self.sync_state_service.save_state(state)
             run.records_failed += 1
 
     @retry(
@@ -294,27 +281,24 @@ class SyncEngine:
 
         Creates a new sync run that only processes failed records.
         """
-        original_run = self.store.get_run(run_id)
+        original_run = await self.sync_run_service.get_run(run_id)
         if not original_run:
             raise ValueError(f"Sync run {run_id} not found")
 
-        failed_states = self.store.get_states_by_status(
+        failed_states = await self.sync_state_service.get_states_by_status(
             self.tenant_id,
             SyncStateStatus.FAILED,
         )
 
-        logger.info(
+        self.logger.info(
             "Replaying %d failed records from run %s",
             len(failed_states),
             run_id,
         )
 
-        run = SyncRun(
-            tenant_id=self.tenant_id,
-            source_connector=self.source.name,
-            target_connector=self.target.name,
-        )
-        self.store.create_run(run)
+        run = await self.sync_run_service.create_run(tenant_id=self.tenant_id,
+                                                     source_connector=self.source.name,
+                                                     target_connector=self.target.name)
 
         for state in failed_states:
             run.records_processed += 1
@@ -343,13 +327,13 @@ class SyncEngine:
                     )
                     run.records_failed += 1
 
-                self.store.save_state(state)
+                await self.sync_state_service.save_state(state)
 
             except Exception as e:
                 state.mark_failed(str(e))
-                self.store.save_state(state)
+                await self.sync_state_service.save_state(state)
                 run.records_failed += 1
 
         run.complete()
-        self.store.update_run(run)
+        await self.sync_run_service.update_run(run)
         return run

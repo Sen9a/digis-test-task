@@ -24,6 +24,20 @@ services:
     networks:
       - digits
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=digits
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - digits
+
   orchestrator:
     build: ./digits
     container_name: orchestrator
@@ -36,11 +50,16 @@ services:
       - BATCH_SIZE=10
       - MAX_RETRIES=3
       - RETRY_BASE_DELAY=1.0
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/digits
     depends_on:
       - fake-source-api
       - fake-target-api
+      - postgres
     networks:
       - digits
+
+volumes:
+  pgdata:
 
 networks:
   digits:

@@ -248,7 +248,7 @@ class TestSyncEngine:
         creds = {"api_key": "***"}
         await engine.run(source_credentials=creds, target_credentials=creds)
 
-        states = state_store.get_all_states("tenant-1")
+        states = await state_store.get_all_states("tenant-1")
         assert len(states) == 3
 
         for state in states:
@@ -268,7 +268,7 @@ class TestSyncEngine:
         creds = {"api_key": "***"}
         await engine.run(source_credentials=creds, target_credentials=creds)
 
-        counts = state_store.count_states("tenant-1")
+        counts = await state_store.count_states("tenant-1")
         assert counts.get("exported") == 3
 
     async def test_tenant_isolation(self, state_store):
@@ -296,8 +296,8 @@ class TestSyncEngine:
 
         await engine1.run(source_credentials=creds, target_credentials=creds)
 
-        assert len(store2.get_all_states("tenant-2")) == 0
-        assert len(store1.get_all_states("tenant-1")) == 3
+        assert len(await store2.get_all_states("tenant-2")) == 0
+        assert len(await store1.get_all_states("tenant-1")) == 3
 
     async def test_failed_auth(self, state_store):
         """Sync should fail gracefully with bad credentials."""
