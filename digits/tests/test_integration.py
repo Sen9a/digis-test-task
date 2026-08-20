@@ -9,13 +9,14 @@ Run with:
 """
 
 import logging
+from contextlib import asynccontextmanager
 
 import pytest
 
 from src.clients.api_client import APIClient
 from src.connectors.source import SourceAPIConnector
 from src.connectors.target import TargetAPIConnector
-from src.db.engine import create_engine, create_session_factory, init_db
+from src.db import create_engine, create_session_factory, init_db
 from src.managers import SyncRunManager, SyncStatesManager
 from src.services import SyncRunService, SyncStateService
 from src.services.aiohttp_service import AiohttpAPIService
@@ -33,10 +34,22 @@ async def db_engine():
     await engine.dispose()
 
 
+def _make_session_provider(db_engine):
+    """Wrap a session factory so it commits on exit, like get_db_session."""
+    session_factory = create_session_factory(db_engine)
+
+    @asynccontextmanager
+    async def get_session():
+        async with session_factory() as session:
+            async with session.begin():
+                yield session
+
+    return get_session
+
+
 @pytest.fixture
 async def sync_state_service(db_engine):
-    session_factory = create_session_factory(db_engine)
-    manager = SyncStatesManager(session_factory=session_factory)
+    manager = SyncStatesManager(session_factory=_make_session_provider(db_engine))
     await manager.clear()
     service = SyncStateService(
         manager=manager,
@@ -48,8 +61,7 @@ async def sync_state_service(db_engine):
 
 @pytest.fixture
 async def sync_run_service(db_engine):
-    session_factory = create_session_factory(db_engine)
-    manager = SyncRunManager(session_factory=session_factory)
+    manager = SyncRunManager(session_factory=_make_session_provider(db_engine))
     await manager.clear()
     service = SyncRunService(
         manager=manager,

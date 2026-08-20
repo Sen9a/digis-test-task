@@ -1,18 +1,16 @@
-from typing import Any, Sequence
-
 from .base import BaseManager
-from sqlalchemy import select, Row, delete
+from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.db import sync_runs_table
+from src.tables import SyncRunStatusTable
 from src.models import SyncRun
 
 class SyncRunManager(BaseManager):
 
     async def create_run(self, run: SyncRun) -> None:
         """Create a new sync run."""
-        async with self._session_factory() as session:
-            stmt = pg_insert(sync_runs_table).values(
+        async with self.session_factory() as session:
+            stmt = pg_insert(SyncRunStatusTable).values(
                 id=run.id,
                 tenant_id=run.tenant_id,
                 source_connector=run.source_connector,
@@ -27,22 +25,19 @@ class SyncRunManager(BaseManager):
                 completed_at=run.completed_at,
             )
             await session.execute(stmt)
-            await session.commit()
+            await session.flush()
 
-    async def get_run(self, run_id: str) -> Row[tuple[Any]] | None:
+    async def get_run(self, run_id: str) -> SyncRunStatusTable | None:
         """Get a sync run by ID."""
-        async with self._session_factory() as session:
-            stmt = select(sync_runs_table).where(sync_runs_table.c.id == run_id)
+        async with self.session_factory() as session:
+            stmt = select(SyncRunStatusTable).where(SyncRunStatusTable.id == run_id)
             result = await session.execute(stmt)
-            row = result.fetchone()
-            if row is None:
-                return None
-            return row
+            return result.scalar_one_or_none()
 
     async def update_run(self, run: SyncRun) -> None:
         """Update a sync run."""
-        async with self._session_factory() as session:
-            stmt = pg_insert(sync_runs_table).values(
+        async with self.session_factory() as session:
+            stmt = pg_insert(SyncRunStatusTable).values(
                 id=run.id,
                 tenant_id=run.tenant_id,
                 source_connector=run.source_connector,
@@ -69,18 +64,17 @@ class SyncRunManager(BaseManager):
                 },
             )
             await session.execute(stmt)
-            await session.commit()
+            await session.flush()
 
-    async def get_runs_for_tenant(self, tenant_id: str) -> Sequence[Row[tuple[Any]]]:
+    async def get_runs_for_tenant(self, tenant_id: str) -> list[SyncRunStatusTable]:
         """Get all runs for a tenant."""
-        async with self._session_factory() as session:
-            stmt = select(sync_runs_table).where(sync_runs_table.c.tenant_id == tenant_id)
+        async with self.session_factory() as session:
+            stmt = select(SyncRunStatusTable).where(SyncRunStatusTable.tenant_id == tenant_id)
             result = await session.execute(stmt)
-            rows = result.fetchall()
-            return rows
+            return list(result.scalars().all())
 
     async def clear(self) -> None:
         """Clear all state (for testing)."""
-        async with self._session_factory() as session:
-            await session.execute(delete(sync_runs_table))
-            await session.commit()
+        async with self.session_factory() as session:
+            await session.execute(delete(SyncRunStatusTable))
+            await session.flush()

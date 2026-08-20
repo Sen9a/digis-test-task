@@ -1,4 +1,7 @@
 """Async database engine and session factory."""
+from typing import AsyncIterator
+
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -8,7 +11,6 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from settings import settings
-from src.db.sql_metadata import metadata
 
 
 def create_engine() -> AsyncEngine:
@@ -29,10 +31,13 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
         expire_on_commit=False,
     )
 
+engine = create_engine()
+async_session_factory = create_session_factory(engine)
 
-async def init_db(engine: AsyncEngine | None = None) -> None:
-    """Create all tables if they don't exist."""
-    if engine is None:
-        engine = create_engine()
-    async with engine.begin() as conn:
-        await conn.run_sync(metadata.create_all)
+@asynccontextmanager
+async def get_db_session() -> AsyncIterator[AsyncSession]:
+    """Provides a transactional scope around a series of operations."""
+
+    async with async_session_factory() as session:
+        async with session.begin():
+            yield session

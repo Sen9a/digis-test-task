@@ -1,13 +1,14 @@
+"""PostgreSQL-backed state store using SQLAlchemy ORM."""
 from __future__ import annotations
 
 from typing import Any, Sequence
+
 from .base import BaseManager
-"""PostgreSQL-backed state store using SQLAlchemy Core."""
 
 from sqlalchemy import select, Row, func, delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.db import sync_states_table
+from src.tables import SyncStateStatusTable
 from src.models import SyncState, SyncStateStatus
 
 class SyncStatesManager(BaseManager):
@@ -17,24 +18,21 @@ class SyncStatesManager(BaseManager):
         tenant_id: str,
         source_connector: str,
         source_record_id: str,
-    ) -> Row[tuple[Any]] | None:
+    ) -> SyncStateStatusTable | None:
         """Get sync state for a specific record."""
-        async with self._session_factory() as session:
-            stmt = select(sync_states_table).where(
-                sync_states_table.c.tenant_id == tenant_id,
-                sync_states_table.c.source_connector == source_connector,
-                sync_states_table.c.source_record_id == source_record_id,
+        async with self.session_factory() as session:
+            stmt = select(SyncStateStatusTable).where(
+                SyncStateStatusTable.tenant_id == tenant_id,
+                SyncStateStatusTable.source_connector == source_connector,
+                SyncStateStatusTable.source_record_id == source_record_id,
             )
             result = await session.execute(stmt)
-            row = result.fetchone()
-            if row is None:
-                return None
-            return row
+            return result.scalar_one_or_none()
 
     async def save_state(self, state: SyncState) -> None:
         """Save or update sync state (upsert)."""
-        async with self._session_factory() as session:
-            stmt = pg_insert(sync_states_table).values(
+        async with self.session_factory() as session:
+            stmt = pg_insert(SyncStateStatusTable).values(
                 id=state.id,
                 tenant_id=state.tenant_id,
                 source_connector=state.source_connector,
@@ -63,7 +61,7 @@ class SyncStatesManager(BaseManager):
                 },
             )
             await session.execute(stmt)
-            await session.commit()
+            await session.flush()
 
     async def get_states_by_status(
         self,
@@ -71,48 +69,46 @@ class SyncStatesManager(BaseManager):
         status: SyncStateStatus,
         source_connector: str | None = None,
         target_connector: str | None = None,
-    ) -> Sequence[Row[tuple[Any]]]:
+    ) -> list[SyncStateStatusTable]:
         """Get all states with a given status for a tenant."""
-        async with self._session_factory() as session:
-            stmt = select(sync_states_table).where(
-                sync_states_table.c.tenant_id == tenant_id,
-                sync_states_table.c.status == status.value,
+        async with self.session_factory() as session:
+            stmt = select(SyncStateStatusTable).where(
+                SyncStateStatusTable.tenant_id == tenant_id,
+                SyncStateStatusTable.status == status.value,
             )
             if source_connector is not None:
                 stmt = stmt.where(
-                    sync_states_table.c.source_connector == source_connector
+                    SyncStateStatusTable.source_connector == source_connector
                 )
             if target_connector is not None:
                 stmt = stmt.where(
-                    sync_states_table.c.target_connector == target_connector
+                    SyncStateStatusTable.target_connector == target_connector
                 )
             result = await session.execute(stmt)
-            rows = result.fetchall()
-            return rows
+            return list(result.scalars().all())
 
-    async def get_all_states(self, tenant_id: str) -> Sequence[Row[tuple[Any]]]:
+    async def get_all_states(self, tenant_id: str) -> list[SyncStateStatusTable]:
         """Get all states for a tenant."""
-        async with self._session_factory() as session:
-            stmt = select(sync_states_table).where(
-                sync_states_table.c.tenant_id == tenant_id,
+        async with self.session_factory() as session:
+            stmt = select(SyncStateStatusTable).where(
+                SyncStateStatusTable.tenant_id == tenant_id,
             )
             result = await session.execute(stmt)
-            rows = result.fetchall()
-            return rows
+            return list(result.scalars().all())
 
     async def count_states(self, tenant_id: str) -> Sequence[Row[tuple[Any, Any]]]:
         """Count states by status for a tenant."""
-        async with self._session_factory() as session:
+        async with self.session_factory() as session:
             stmt = (
-                select(sync_states_table.c.status, func.count())
-                .where(sync_states_table.c.tenant_id == tenant_id)
-                .group_by(sync_states_table.c.status)
+                select(SyncStateStatusTable.status, func.count())
+                .where(SyncStateStatusTable.tenant_id == tenant_id)
+                .group_by(SyncStateStatusTable.status)
             )
             result = await session.execute(stmt)
             return result.fetchall()
 
     async def clear(self) -> None:
         """Clear all state (for testing)."""
-        async with self._session_factory() as session:
-            await session.execute(delete(sync_states_table))
-            await session.commit()
+        async with self.session_factory() as session:
+            await session.execute(delete(SyncStateStatusTable))
+            await session.flush()
