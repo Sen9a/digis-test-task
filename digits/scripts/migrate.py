@@ -1,33 +1,28 @@
 """
-One-time database migration script.
+Database migration script using Alembic.
 
 Usage:
-    python -m scripts.migrate
+    python -m scripts.migrate          # Apply all pending migrations
+    python -m scripts.migrate --stamp  # Stamp current state without running migrations
 
-Creates all tables if they don't exist.
-Safe to run multiple times (idempotent).
+For more control, use alembic directly:
+    poetry run alembic upgrade head
+    poetry run alembic downgrade -1
+    poetry run alembic revision --autogenerate -m "description"
+    poetry run alembic history
 """
 
-import asyncio
-import logging
-
-from src.db.engine import create_engine, init_db
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
+import subprocess
+import sys
 
 
-async def migrate() -> None:
-    engine = create_engine()
-    try:
-        await init_db(engine)
-        logger.info("Database migration complete")
-    finally:
-        await engine.dispose()
+def migrate() -> None:
+    result = subprocess.run(
+        ["poetry", "run", "alembic", "upgrade", "head"],
+        capture_output=False,
+    )
+    sys.exit(result.returncode)
 
 
 if __name__ == "__main__":
-    asyncio.run(migrate())
+    migrate()
