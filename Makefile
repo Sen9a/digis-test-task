@@ -59,6 +59,22 @@ logs-target:
 logs-orchestrator:
 	docker compose logs -f orchestrator
 
+# Database
+db:
+	docker compose up -d postgres
+
+migrate:
+	cd digits && poetry run alembic upgrade head
+
+migrate-new:
+	cd digits && poetry run alembic revision --autogenerate -m "$(msg)"
+
+migrate-history:
+	cd digits && poetry run alembic history
+
+db-logs:
+	docker compose logs -f postgres
+
 # Run sync once
 run:
 	docker compose up orchestrator

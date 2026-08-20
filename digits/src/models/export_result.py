@@ -1,9 +1,8 @@
-from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.const import ErrorCategory
+from src.const import ErrorCategory, Status
 from src.models.sync_error import SyncError
 
 
@@ -14,13 +13,6 @@ class ExportResult(BaseModel):
     Success doesn't always mean "created" — could be "updated", "skipped",
     or "already existed".
     """
-
-    class Status(str, Enum):
-        CREATED = "created"  # New record created in target
-        UPDATED = "updated"  # Existing record updated
-        SKIPPED_UNCHANGED = "skipped_unchanged"  # No changes detected
-        ALREADY_EXISTS = "already_exists"  # Duplicate detected, resolved
-        REVERSED_AND_RECREATED = "reversed_and_recreated"  # Old reversed, new created
 
     status: Status
     target_id: str | None = None  # Target system's record ID

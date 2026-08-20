@@ -4,6 +4,7 @@ from src.abstract import (
     NormalizationError,
     NotSupportedError,
     RateLimitError,
+    RecordNotFoundError,
     SourceConnector,
     SourceUnavailableError,
     TargetConnector,
@@ -54,6 +55,7 @@ __all__ = [
     "AuthenticationError",
     "RateLimitError",
     "SourceUnavailableError",
+    "RecordNotFoundError",
     "NormalizationError",
     "NotSupportedError",
 ]

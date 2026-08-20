@@ -1,20 +1,27 @@
 """Tests for the sync engine."""
 
+import logging
 from decimal import Decimal
 
 import pytest
 
+from src.clients.api_client import APIClient
 from src.connectors.source import SourceAPIConnector
 from src.connectors.target import TargetAPIConnector
+from src.const import ErrorCategory
+from src.db.engine import create_engine, create_session_factory, init_db
+from exceptions import RateLimitError, RetryableExportError
+from src.managers import SyncRunManager, SyncStatesManager
 from src.models import (
     ExportResult,
+    SyncError,
     SyncStateStatus,
     SyncRunStatus,
 )
+from src.services import SyncRunService, SyncStateService
 from src.services.fake_service import FakeAPIService
-from src.clients.api_client import APIClient
-from src.sync.engine import SyncEngine
-from src.sync.state import StateStore
+from src.sync.engine import SyncEngine, wait_retry_after_aware
+from settings import settings
 
 AUTH_RESPONSE = {"token": "***", "expires_in": 3600}
 
@@ -59,14 +66,11 @@ def _make_source(service: FakeAPIService, invoices=None):
     """Create a SourceAPIConnector backed by FakeAPIService."""
     invoices = invoices or SAMPLE_INVOICES
     service.add_response("POST", "/auth/token", AUTH_RESPONSE)
-
-    # Queue all invoices in one page (tests can override for pagination)
     service.add_response(
         "GET",
         "/invoices",
         {"invoices": invoices, "next_cursor": None},
     )
-
     client = APIClient(service)
     return SourceAPIConnector(client)
 
@@ -74,23 +78,42 @@ def _make_source(service: FakeAPIService, invoices=None):
 def _make_target(service: FakeAPIService):
     """Create a TargetAPIConnector backed by FakeAPIService."""
     service.add_response("POST", "/auth/token", AUTH_RESPONSE)
-
-    # Track created invoices for idempotency
-    created: dict[str, dict] = {}
-    idempotency_map: dict[str, str] = {}
-    counter = {"next_id": 1}
-
-    # We need to queue responses dynamically, so we'll use a custom approach
-    # For the basic case, queue a 201 for each expected export
-    # Tests that need specific behavior should configure the service directly
-
     client = APIClient(service)
-    return TargetAPIConnector(client), created, idempotency_map, counter
+    return TargetAPIConnector(client)
 
 
 @pytest.fixture
-def state_store():
-    return StateStore()
+async def db_engine():
+    engine = create_engine()
+    await init_db(engine)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+async def sync_state_service(db_engine):
+    session_factory = create_session_factory(db_engine)
+    manager = SyncStatesManager(session_factory=session_factory)
+    await manager.clear()
+    service = SyncStateService(
+        manager=manager,
+        logger=logging.getLogger("test.sync_state"),
+    )
+    yield service
+    await manager.clear()
+
+
+@pytest.fixture
+async def sync_run_service(db_engine):
+    session_factory = create_session_factory(db_engine)
+    manager = SyncRunManager(session_factory=session_factory)
+    await manager.clear()
+    service = SyncRunService(
+        manager=manager,
+        logger=logging.getLogger("test.sync_run"),
+    )
+    yield service
+    await manager.clear()
 
 
 @pytest.fixture
@@ -110,26 +133,26 @@ def source_connector(source_service):
 
 @pytest.fixture
 def target_connector(target_service):
-    connector, _, _, _ = _make_target(target_service)
-    return connector
+    return _make_target(target_service)
 
 
 @pytest.fixture
-def engine(source_connector, target_connector, state_store):
+def engine(source_connector, target_connector, sync_run_service, sync_state_service):
     return SyncEngine(
         source=source_connector,
         target=target_connector,
-        store=state_store,
+        sync_run_service=sync_run_service,
+        sync_state_service=sync_state_service,
         tenant_id="tenant-1",
+        logger=logging.getLogger("test.engine"),
     )
 
 
 class TestSyncEngine:
     """Tests for the core sync engine."""
 
-    async def test_basic_sync(self, engine, state_store, target_service):
+    async def test_basic_sync(self, engine, sync_state_service, target_service):
         """Sync all invoices from source to target."""
-        # Queue target export responses (201 for each invoice)
         for i in range(3):
             target_service.add_response(
                 "POST",
@@ -149,13 +172,13 @@ class TestSyncEngine:
         assert run.records_failed == 0
         assert run.records_skipped == 0
 
-    async def test_sync_idempotency(self, state_store):
+    async def test_sync_idempotency(self, sync_run_service, sync_state_service):
         """Running sync twice should skip unchanged invoices."""
         # First run
         source_svc1 = FakeAPIService()
         target_svc1 = FakeAPIService()
         source1 = _make_source(source_svc1)
-        target1, _, _, _ = _make_target(target_svc1)
+        target1 = _make_target(target_svc1)
 
         for i in range(3):
             target_svc1.add_response(
@@ -165,7 +188,10 @@ class TestSyncEngine:
 
         engine1 = SyncEngine(
             source=source1, target=target1,
-            store=state_store, tenant_id="tenant-1",
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
         )
 
         creds = {"api_key": "***"}
@@ -176,11 +202,14 @@ class TestSyncEngine:
         source_svc2 = FakeAPIService()
         target_svc2 = FakeAPIService()
         source2 = _make_source(source_svc2)
-        target2, _, _, _ = _make_target(target_svc2)
+        target2 = _make_target(target_svc2)
 
         engine2 = SyncEngine(
             source=source2, target=target2,
-            store=state_store, tenant_id="tenant-1",
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
         )
 
         run2 = await engine2.run(source_credentials=creds, target_credentials=creds)
@@ -188,7 +217,7 @@ class TestSyncEngine:
         assert run2.records_skipped == 3
         assert run2.records_succeeded == 0
 
-    async def test_sync_detects_changes(self, state_store):
+    async def test_sync_detects_changes(self, sync_run_service, sync_state_service):
         """Modified invoices should be re-exported."""
         creds = {"api_key": "***"}
 
@@ -196,7 +225,7 @@ class TestSyncEngine:
         source_svc1 = FakeAPIService()
         target_svc1 = FakeAPIService()
         source1 = _make_source(source_svc1)
-        target1, _, _, _ = _make_target(target_svc1)
+        target1 = _make_target(target_svc1)
 
         for i in range(3):
             target_svc1.add_response(
@@ -206,7 +235,10 @@ class TestSyncEngine:
 
         engine1 = SyncEngine(
             source=source1, target=target1,
-            store=state_store, tenant_id="tenant-1",
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
         )
         run1 = await engine1.run(source_credentials=creds, target_credentials=creds)
         assert run1.records_succeeded == 3
@@ -219,9 +251,9 @@ class TestSyncEngine:
         source_svc2 = FakeAPIService()
         target_svc2 = FakeAPIService()
         source2 = _make_source(source_svc2, invoices=modified)
-        target2, _, _, _ = _make_target(target_svc2)
+        target2 = _make_target(target_svc2)
 
-        # The changed invoice should trigger an update (target supports update)
+        # The changed invoice should trigger an update
         target_svc2.add_response(
             "POST", "/invoices/tgt-1",
             {"id": "tgt-1", "status": "updated"}, status=200,
@@ -229,7 +261,10 @@ class TestSyncEngine:
 
         engine2 = SyncEngine(
             source=source2, target=target2,
-            store=state_store, tenant_id="tenant-1",
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
         )
         run2 = await engine2.run(source_credentials=creds, target_credentials=creds)
 
@@ -237,7 +272,7 @@ class TestSyncEngine:
         assert run2.records_skipped == 2
         assert run2.records_succeeded == 1
 
-    async def test_state_tracking(self, engine, state_store, target_service):
+    async def test_state_tracking(self, engine, sync_state_service, target_service):
         """State store should track all records."""
         for i in range(3):
             target_service.add_response(
@@ -248,7 +283,7 @@ class TestSyncEngine:
         creds = {"api_key": "***"}
         await engine.run(source_credentials=creds, target_credentials=creds)
 
-        states = state_store.get_all_states("tenant-1")
+        states = await sync_state_service.get_all_states("tenant-1")
         assert len(states) == 3
 
         for state in states:
@@ -257,7 +292,7 @@ class TestSyncEngine:
             assert state.content_hash != ""
             assert state.attempt_count >= 1
 
-    async def test_state_counts(self, engine, state_store, target_service):
+    async def test_state_counts(self, engine, sync_state_service, target_service):
         """State store should provide accurate counts."""
         for i in range(3):
             target_service.add_response(
@@ -268,17 +303,17 @@ class TestSyncEngine:
         creds = {"api_key": "***"}
         await engine.run(source_credentials=creds, target_credentials=creds)
 
-        counts = state_store.count_states("tenant-1")
+        counts = await sync_state_service.count_states("tenant-1")
         assert counts.get("exported") == 3
 
-    async def test_tenant_isolation(self, state_store):
+    async def test_tenant_isolation(self, sync_run_service, sync_state_service):
         """Different tenants should have isolated state."""
         creds = {"api_key": "***"}
 
         source_svc = FakeAPIService()
         target_svc = FakeAPIService()
         source = _make_source(source_svc)
-        target, _, _, _ = _make_target(target_svc)
+        target = _make_target(target_svc)
 
         for i in range(3):
             target_svc.add_response(
@@ -286,20 +321,20 @@ class TestSyncEngine:
                 {"id": f"tgt-{i+1}", "status": "created"}, status=201,
             )
 
-        store1 = StateStore()
-        store2 = StateStore()
-
         engine1 = SyncEngine(
             source=source, target=target,
-            store=store1, tenant_id="tenant-1",
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
         )
 
         await engine1.run(source_credentials=creds, target_credentials=creds)
 
-        assert len(store2.get_all_states("tenant-2")) == 0
-        assert len(store1.get_all_states("tenant-1")) == 3
+        assert len(await sync_state_service.get_all_states("tenant-2")) == 0
+        assert len(await sync_state_service.get_all_states("tenant-1")) == 3
 
-    async def test_failed_auth(self, state_store):
+    async def test_failed_auth(self, sync_run_service, sync_state_service):
         """Sync should fail gracefully with bad credentials."""
         source_svc = FakeAPIService()
         source_svc.add_response(
@@ -314,7 +349,10 @@ class TestSyncEngine:
 
         engine = SyncEngine(
             source=source, target=target,
-            store=state_store, tenant_id="tenant-1",
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
         )
 
         run = await engine.run(
@@ -349,11 +387,165 @@ class TestSyncEngine:
         assert parts[2] == "inv-001"
         assert len(parts[3]) == 64  # SHA256 hex
 
+    async def test_skip_stable_across_repeated_runs(
+        self, sync_run_service, sync_state_service
+    ):
+        """Repeated runs must keep skipping unchanged invoices.
+
+        Regression test: skipping used to set status=SKIPPED_UNCHANGED while
+        the skip check required EXPORTED, so every second run re-exported.
+        """
+        creds = {"api_key": "***"}
+
+        # Run 1: export all three invoices
+        source_svc1 = FakeAPIService()
+        target_svc1 = FakeAPIService()
+        source1 = _make_source(source_svc1)
+        target1 = _make_target(target_svc1)
+        for i in range(3):
+            target_svc1.add_response(
+                "POST", "/invoices",
+                {"id": f"tgt-{i+1}", "status": "created"}, status=201,
+            )
+        engine1 = SyncEngine(
+            source=source1, target=target1,
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
+        )
+        run1 = await engine1.run(source_credentials=creds, target_credentials=creds)
+        assert run1.records_succeeded == 3
+
+        # Runs 2 and 3: no export responses queued on the target — any
+        # export attempt would raise inside FakeAPIService and be recorded
+        # as a failure, so clean skips prove no export was attempted.
+        for _ in range(2):
+            source_svc = FakeAPIService()
+            target_svc = FakeAPIService()
+            source = _make_source(source_svc)
+            target = _make_target(target_svc)
+            engine = SyncEngine(
+                source=source, target=target,
+                sync_run_service=sync_run_service,
+                sync_state_service=sync_state_service,
+                tenant_id="tenant-1",
+                logger=logging.getLogger("test.engine"),
+            )
+            run = await engine.run(source_credentials=creds, target_credentials=creds)
+
+            assert run.records_processed == 3
+            assert run.records_skipped == 3
+            assert run.records_succeeded == 0
+            assert run.records_failed == 0
+            export_calls = [
+                r for r in target_svc.request_log if r["url"] == "/invoices"
+            ]
+            assert export_calls == []
+
+    async def test_failed_invoice_preserves_target_link(
+        self, sync_run_service, sync_state_service
+    ):
+        """A normalization failure must not wipe the target record link.
+
+        Regression test: the error handler used to upsert a blank state,
+        resetting target_record_id to None for previously exported invoices.
+        """
+        creds = {"api_key": "***"}
+
+        # Run 1: export all three invoices
+        source_svc1 = FakeAPIService()
+        target_svc1 = FakeAPIService()
+        source1 = _make_source(source_svc1)
+        target1 = _make_target(target_svc1)
+        for i in range(3):
+            target_svc1.add_response(
+                "POST", "/invoices",
+                {"id": f"tgt-{i+1}", "status": "created"}, status=201,
+            )
+        engine1 = SyncEngine(
+            source=source1, target=target1,
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
+        )
+        run1 = await engine1.run(source_credentials=creds, target_credentials=creds)
+        assert run1.records_succeeded == 3
+
+        # Run 2: inv-001 has a corrupt date → normalization fails
+        broken = [dict(inv) for inv in SAMPLE_INVOICES]
+        broken[0]["date"] = "not-a-date"
+
+        source_svc2 = FakeAPIService()
+        target_svc2 = FakeAPIService()
+        source2 = _make_source(source_svc2, invoices=broken)
+        target2 = _make_target(target_svc2)
+        engine2 = SyncEngine(
+            source=source2, target=target2,
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
+        )
+        run2 = await engine2.run(source_credentials=creds, target_credentials=creds)
+
+        assert run2.records_failed == 1
+        assert run2.records_skipped == 2
+
+        state = await sync_state_service.get_state("tenant-1", "source_api", "inv-001")
+        assert state is not None
+        assert state.status == SyncStateStatus.FAILED
+        assert state.target_record_id == "tgt-1"  # link preserved
+        assert state.last_error is not None
+
+
+class _FakeOutcome:
+    def __init__(self, exc):
+        self._exc = exc
+
+    def exception(self):
+        return self._exc
+
+
+class _FakeRetryState:
+    """Minimal stand-in for tenacity's RetryCallState."""
+
+    def __init__(self, exc, attempt):
+        self.outcome = _FakeOutcome(exc)
+        self.attempt_number = attempt
+
+
+class TestWaitStrategy:
+    """Tests for the Retry-After-aware tenacity wait function."""
+
+    def test_honors_server_retry_after(self):
+        exc = RateLimitError("slow down", retry_after_seconds=7)
+        assert wait_retry_after_aware(_FakeRetryState(exc, attempt=1)) == 7.0
+
+    def test_retry_after_capped_at_60s(self):
+        exc = RateLimitError("slow down", retry_after_seconds=3600)
+        assert wait_retry_after_aware(_FakeRetryState(exc, attempt=1)) == 60.0
+
+    def test_exponential_backoff_for_other_retryable_errors(self):
+        result = ExportResult(
+            status=ExportResult.Status.FAILED,
+            error=SyncError(
+                category=ErrorCategory.RETRYABLE,
+                code="HTTP_500",
+                message="boom",
+            ),
+        )
+        exc = RetryableExportError(result)
+        base = settings.retry_base_delay
+        assert wait_retry_after_aware(_FakeRetryState(exc, attempt=1)) == base
+        assert wait_retry_after_aware(_FakeRetryState(exc, attempt=3)) == base * 4
+
 
 class TestSyncEngineWithPagination:
     """Tests for sync with paginated sources."""
 
-    async def test_paginated_sync(self, state_store):
+    async def test_paginated_sync(self, sync_run_service, sync_state_service):
         """Sync should handle paginated source data."""
         invoices = [
             {
@@ -398,7 +590,10 @@ class TestSyncEngineWithPagination:
 
         engine = SyncEngine(
             source=source, target=target,
-            store=state_store, tenant_id="tenant-1",
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
         )
 
         creds = {"api_key": "***"}

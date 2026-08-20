@@ -4,6 +4,7 @@ from exceptions import (
     NormalizationError,
     NotSupportedError,
     RateLimitError,
+    RecordNotFoundError,
     SourceUnavailableError,
 )
 from src.abstract.source_connector import SourceConnector
@@ -16,6 +17,7 @@ __all__ = [
     "AuthenticationError",
     "RateLimitError",
     "SourceUnavailableError",
+    "RecordNotFoundError",
     "NormalizationError",
     "NotSupportedError",
 ]

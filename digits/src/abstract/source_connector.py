@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
 
+from exceptions import NormalizationError
 from src.models import Cursor, FetchResult, RawInvoice, UnifiedInvoice
 
 
@@ -54,6 +55,23 @@ class SourceConnector(ABC):
         ...
 
     # --- Fetching ---
+
+    @abstractmethod
+    async def fetch_invoice_by_id(self, invoice_id: str) -> RawInvoice:
+        """
+        Fetch a single invoice by its source ID.
+
+        Args:
+            invoice_id: The source system's invoice ID
+
+        Returns:
+            RawInvoice with the source data
+
+        Raises:
+            SourceUnavailableError: If source is temporarily down
+            AuthenticationError: If token is expired
+        """
+        ...
 
     @abstractmethod
     async def fetch_invoices(

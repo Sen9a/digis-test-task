@@ -5,7 +5,7 @@ Usage:
     python -m main
 
 Configuration via .env file or environment variables.
-See src/settings.py for all available options.
+See settings.py for all available options.
 """
 
 import asyncio
@@ -15,10 +15,11 @@ import sys
 from src.clients.api_client import APIClient
 from src.connectors.source import SourceAPIConnector
 from src.connectors.target import TargetAPIConnector
+from src.managers import SyncRunManager, SyncStatesManager
+from src.services import SyncRunService, SyncStateService
 from src.services.aiohttp_service import AiohttpAPIService
 from settings import Settings
 from src.sync.engine import SyncEngine
-from src.sync.state import StateStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,13 +46,24 @@ async def main() -> int:
         APIClient(AiohttpAPIService(base_url=settings.target_api_url))
     )
 
+    # Build services
+    sync_run_service = SyncRunService(
+        manager=SyncRunManager(),
+        logger=logging.getLogger("sync_run"),
+    )
+    sync_state_service = SyncStateService(
+        manager=SyncStatesManager(),
+        logger=logging.getLogger("sync_state"),
+    )
+
     # Run sync
-    store = StateStore()
     engine = SyncEngine(
         source=source,
         target=target,
-        store=store,
+        sync_run_service=sync_run_service,
+        sync_state_service=sync_state_service,
         tenant_id=settings.tenant_id,
+        logger=logging.getLogger("sync_engine"),
     )
 
     run = await engine.run(
@@ -78,7 +90,7 @@ async def main() -> int:
     print("=" * 60)
 
     # Print state summary
-    counts = store.count_states(settings.tenant_id)
+    counts = await sync_state_service.count_states(settings.tenant_id)
     if counts:
         print("\n  State breakdown:")
         for status, count in sorted(counts.items()):
@@ -88,7 +100,7 @@ async def main() -> int:
     if run.records_failed > 0:
         from src.models import SyncStateStatus
 
-        failed = store.get_states_by_status(
+        failed = await sync_state_service.get_states_by_status(
             settings.tenant_id, SyncStateStatus.FAILED
         )
         print("\n  Failed records:")

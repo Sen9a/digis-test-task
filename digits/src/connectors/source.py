@@ -4,11 +4,13 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from src import CustomerRef
 from src.abstract import SourceConnector
 from exceptions import (
     AuthenticationError,
     NormalizationError,
     RateLimitError,
+    RecordNotFoundError,
     SourceUnavailableError,
 )
 from src.clients.api_client import APIClient
@@ -63,6 +65,36 @@ class SourceAPIConnector(SourceConnector):
 
         self._token = body.get("token")
         self._authenticated = True
+
+    async def fetch_invoice_by_id(self, invoice_id: str) -> RawInvoice:
+        """Fetch a single invoice by ID from GET /invoices/{id}."""
+        if not self._authenticated:
+            raise RuntimeError("Not authenticated")
+
+        headers = {"Authorization": f"Bearer {self._token}"}
+
+        body, status = await self._client.get(
+            f"/invoices/{invoice_id}",
+            headers=headers,
+        )
+
+        if status == 429:
+            retry_after = int(body.get("retry_after", 60))
+            raise RateLimitError(
+                "Rate limit exceeded",
+                retry_after_seconds=retry_after,
+            )
+        if status == 401:
+            raise AuthenticationError("Token expired or invalid")
+        if status == 404:
+            raise RecordNotFoundError(f"Invoice {invoice_id} not found")
+        if status != 200:
+            raise SourceUnavailableError(f"Fetch failed with status {status}")
+
+        return RawInvoice(
+            source_id=str(body.get("id", invoice_id)),
+            data=body,
+        )
 
     async def fetch_invoices(
         self,
@@ -199,12 +231,12 @@ class SourceAPIConnector(SourceConnector):
             return UnifiedInvoice(
                 external_id=str(data.get("id", raw.source_id)),
                 invoice_number=str(data.get("number", raw.source_id)),
-                customer={
+                customer=CustomerRef(**{
                     "external_id": str(customer_data.get("id", "unknown")),
                     "name": customer_data.get("name"),
                     "email": customer_data.get("email"),
                     "raw": customer_data,
-                },
+                }),
                 currency=data.get("currency", "USD"),
                 total=Decimal(str(data.get("amount", 0))),
                 tax_total=Decimal(str(data.get("tax", 0))),
