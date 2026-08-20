@@ -143,6 +143,13 @@ _lock = threading.Lock()
 _request_count: int = 0
 
 
+class RateLimitExceeded(Exception):
+    """Raised when the request counter exceeds RATE_LIMIT_AFTER."""
+
+    def __init__(self, retry_after: int = 5) -> None:
+        self.retry_after = retry_after
+
+
 def _check_rate_limit() -> None:
     global _request_count
     if RATE_LIMIT_AFTER <= 0:
@@ -150,11 +157,7 @@ def _check_rate_limit() -> None:
     with _lock:
         _request_count += 1
         if _request_count > RATE_LIMIT_AFTER:
-            raise HTTPException(
-                status_code=429,
-                detail="Rate limit exceeded",
-                headers={"Retry-After": "5"},
-            )
+            raise RateLimitExceeded(retry_after=5)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +178,15 @@ def _verify_token(authorization: str | None) -> None:
 # FastAPI app
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Fake Source API", version="1.0.0")
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded", "retry_after": exc.retry_after},
+        headers={"Retry-After": str(exc.retry_after)},
+    )
 
 
 class TokenRequest(BaseModel):

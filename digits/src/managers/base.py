@@ -1,23 +1,15 @@
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-from src.db import create_engine, create_session_factory
+from typing import Any
+from dataclasses import dataclass
+from src.db.engine import get_db_session
 
+@dataclass
 class BaseManager:
     """
     PostgreSQL-backed state store for sync state and run tracking.
 
-    Uses SQLAlchemy Core (not ORM) with async sessions.
-    Converts between database rows and Pydantic models.
+    Uses SQLAlchemy ORM with async sessions. session_factory must be an
+    async context manager yielding a session within a transaction
+    (e.g. src.db.engine.get_db_session).
     """
 
-    def __init__(
-        self,
-        engine: AsyncEngine | None = None,
-        session_factory: async_sessionmaker[AsyncSession] | None = None,
-    ) -> None:
-        if session_factory is not None:
-            self._session_factory = session_factory
-        elif engine is not None:
-            self._session_factory = create_session_factory(engine)
-        else:
-            _engine = create_engine()
-            self._session_factory = create_session_factory(_engine)
+    session_factory: Any = get_db_session

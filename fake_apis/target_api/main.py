@@ -83,11 +83,27 @@ class ReverseRequest(BaseModel):
     reason: str = "reversal requested"
 
 
+class RateLimitExceeded(Exception):
+    """Raised when the request counter exceeds RATE_LIMIT_AFTER."""
+
+    def __init__(self, retry_after: int = 1) -> None:
+        self.retry_after = retry_after
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Fake Target Accounting API", version="1.0.0")
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded", "retry_after": exc.retry_after},
+        headers={"Retry-After": str(exc.retry_after)},
+    )
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -104,11 +120,7 @@ def _check_rate_limit() -> None:
         return
     request_counter += 1
     if request_counter > RATE_LIMIT_AFTER:
-        raise HTTPException(
-            status_code=429,
-            detail="Rate limit exceeded",
-            headers={"Retry-After": "1"},
-        )
+        raise RateLimitExceeded(retry_after=1)
 
 
 def _verify_token(authorization: str | None) -> str:
