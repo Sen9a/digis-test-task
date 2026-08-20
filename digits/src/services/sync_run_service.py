@@ -9,7 +9,25 @@ from src.models import SyncRun, SyncRunStatus
 @dataclass
 class SyncRunService:
     manager: SyncRunManager
-    logger: 'logging.getLogger'
+    logger: logging.Logger
+
+    @staticmethod
+    def _row_to_run_state(row) -> SyncState:
+        """Convert a database row to a SyncState Pydantic model."""
+        return SyncRun(
+                id=row.id,
+                tenant_id=row.tenant_id,
+                source_connector=row.source_connector,
+                target_connector=row.target_connector,
+                status=SyncRunStatus(row.status),
+                cursor_position=row.cursor_position,
+                records_processed=row.records_processed,
+                records_succeeded=row.records_succeeded,
+                records_failed=row.records_failed,
+                records_skipped=row.records_skipped,
+                started_at=row.started_at,
+                completed_at=row.completed_at,
+        )
 
     async def create_run(self,
                          *,
@@ -38,18 +56,5 @@ class SyncRunService:
     async def get_run(self, run_id: str) -> SyncRun | None:
         row = await self.manager.get_run(run_id)
         if row:
-            return SyncRun(
-                id=row.id,
-                tenant_id=row.tenant_id,
-                source_connector=row.source_connector,
-                target_connector=row.target_connector,
-                status=SyncRunStatus(row.status),
-                cursor_position=row.cursor_position,
-                records_processed=row.records_processed,
-                records_succeeded=row.records_succeeded,
-                records_failed=row.records_failed,
-                records_skipped=row.records_skipped,
-                started_at=row.started_at,
-                completed_at=row.completed_at,
-            )
+            return self._row_to_run_state(row)
         return None

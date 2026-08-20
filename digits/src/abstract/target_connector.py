@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from exceptions import NotSupportedError
 from src.models import ExportResult, UnifiedInvoice
 
 

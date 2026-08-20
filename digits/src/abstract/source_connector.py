@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
 
+from exceptions import NormalizationError
 from src.models import Cursor, FetchResult, RawInvoice, UnifiedInvoice
 
 

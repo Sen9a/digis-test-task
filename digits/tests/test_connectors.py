@@ -6,9 +6,11 @@ from decimal import Decimal
 from src import (
     APIClient,
     AuthenticationError,
+    ErrorCategory,
     FakeAPIService,
     NotSupportedError,
     RateLimitError,
+    RecordNotFoundError,
     SourceAPIConnector,
     TargetAPIConnector,
 )
@@ -172,6 +174,21 @@ class TestSourceAPIConnector:
             invoices.append(invoice)
 
         assert len(invoices) == 3
+
+    async def test_fetch_invoice_by_id_not_found(self, connector, service):
+        """404 on single-invoice fetch is a permanent RecordNotFoundError."""
+        service.add_response("POST", "/auth/token", AUTH_RESPONSE)
+        await connector.authenticate({"api_key": "***"})
+
+        service.add_response(
+            "GET",
+            "/invoices/inv-999",
+            {"detail": "Not found"},
+            status=404,
+        )
+
+        with pytest.raises(RecordNotFoundError):
+            await connector.fetch_invoice_by_id("inv-999")
 
     async def test_rate_limit(self, connector, service):
         """Rate limiting returns 429."""
@@ -390,3 +407,43 @@ class TestTargetAPIConnector:
         assert not result.is_success
         assert result.error is not None
         assert result.error.code == "NOT_FOUND"
+
+    async def test_export_server_error_is_retryable(self, connector, service, sample_invoice):
+        """5xx from target is classified as retryable, not permanent."""
+        service.add_response("POST", "/auth/token", AUTH_RESPONSE)
+        await connector.authenticate({"api_key": "***"})
+
+        service.add_response(
+            "POST",
+            "/invoices",
+            {"detail": "Internal server error"},
+            status=500,
+        )
+
+        result = await connector.export_invoice(sample_invoice, "key-1")
+
+        assert not result.is_success
+        assert result.status == ExportResult.Status.FAILED
+        assert result.error is not None
+        assert result.error.category == ErrorCategory.RETRYABLE
+        assert result.is_retryable
+
+    async def test_export_client_error_is_permanent(self, connector, service, sample_invoice):
+        """4xx (non-409/429) from target is classified as permanent."""
+        service.add_response("POST", "/auth/token", AUTH_RESPONSE)
+        await connector.authenticate({"api_key": "***"})
+
+        service.add_response(
+            "POST",
+            "/invoices",
+            {"detail": "Validation failed"},
+            status=400,
+        )
+
+        result = await connector.export_invoice(sample_invoice, "key-1")
+
+        assert not result.is_success
+        assert result.status == ExportResult.Status.FAILED
+        assert result.error is not None
+        assert result.error.category == ErrorCategory.PERMANENT
+        assert not result.is_retryable

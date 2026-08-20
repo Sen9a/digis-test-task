@@ -9,7 +9,7 @@ from src.models import SyncState, SyncStateStatus
 @dataclass
 class SyncStateService:
     manager: SyncStatesManager
-    logger: 'logging.getLogger'
+    logger: logging.Logger
 
     @staticmethod
     async def sync_state(*,

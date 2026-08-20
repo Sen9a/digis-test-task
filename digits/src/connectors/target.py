@@ -122,10 +122,14 @@ class TargetAPIConnector(TargetConnector):
                 response_data=body,
             )
 
+        # 5xx and other server-side failures are retryable; 4xx are permanent
+        category = (
+            ErrorCategory.RETRYABLE if status >= 500 else ErrorCategory.PERMANENT
+        )
         return ExportResult(
-            status=ExportResult.Status.CREATED,
+            status=ExportResult.Status.FAILED,
             error=SyncError(
-                category=ErrorCategory.PERMANENT,
+                category=category,
                 code=f"HTTP_{status}",
                 message=f"Unexpected status {status}: {body}",
                 details=body,
@@ -137,7 +141,7 @@ class TargetAPIConnector(TargetConnector):
         target_id: str,
         invoice: UnifiedInvoice,
     ) -> ExportResult:
-        """Update existing invoice via PUT /invoices/{id}."""
+        """Update existing invoice via POST /invoices/{id}."""
         if not self._authenticated:
             raise RuntimeError("Not authenticated")
 
@@ -152,7 +156,7 @@ class TargetAPIConnector(TargetConnector):
 
         if status == 404:
             return ExportResult(
-                status=ExportResult.Status.CREATED,
+                status=ExportResult.Status.FAILED,
                 error=SyncError(
                     category=ErrorCategory.PERMANENT,
                     code="NOT_FOUND",
@@ -167,10 +171,13 @@ class TargetAPIConnector(TargetConnector):
                 response_data=body,
             )
 
+        category = (
+            ErrorCategory.RETRYABLE if status >= 500 else ErrorCategory.PERMANENT
+        )
         return ExportResult(
-            status=ExportResult.Status.UPDATED,
+            status=ExportResult.Status.FAILED,
             error=SyncError(
-                category=ErrorCategory.PERMANENT,
+                category=category,
                 code=f"HTTP_{status}",
                 message=f"Update failed with status {status}",
                 details=body,

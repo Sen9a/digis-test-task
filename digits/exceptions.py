@@ -26,6 +26,12 @@ class SourceUnavailableError(ConnectorError):
     pass
 
 
+class RecordNotFoundError(ConnectorError):
+    """Record does not exist in the source/target system (permanent)."""
+
+    pass
+
+
 class NormalizationError(ConnectorError):
     """Cannot normalize source data to unified model."""
 

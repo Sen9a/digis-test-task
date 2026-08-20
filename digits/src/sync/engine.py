@@ -7,7 +7,6 @@ from typing import Any
 from tenacity import (
     retry,
     stop_after_attempt,
-    wait_exponential,
     retry_if_exception_type,
     before_sleep_log,
 )
@@ -20,7 +19,7 @@ from exceptions import (
     RetryableExportError,
     SourceUnavailableError,
 )
-from src.const import ErrorCategory
+from src.const import ErrorCategory, Status
 from src.models import (
     Cursor,
     ExportResult,
@@ -31,6 +30,8 @@ from src.models import (
     UnifiedInvoice,
 )
 from settings import settings
+from utils import wait_retry_after_aware
+
 
 @dataclass
 class SyncEngine:
@@ -50,7 +51,7 @@ class SyncEngine:
     sync_run_service: SyncRunService
     sync_state_service: SyncStateService
     tenant_id: str
-    logger: 'logging.getLogger'
+    logger: logging.Logger
 
     async def run(
         self,
@@ -139,11 +140,15 @@ class SyncEngine:
                 source_record_id,
             )
 
-            # Skip if unchanged and previously exported
+            # Skip if unchanged and previously exported.
+            # SKIPPED_UNCHANGED is accepted too: a skipped record is still
+            # exported in the target — without this, every other run would
+            # needlessly re-export unchanged invoices.
             if (
                 existing
                 and existing.content_hash == unified.content_hash
-                and existing.status == SyncStateStatus.EXPORTED
+                and existing.status
+                in (SyncStateStatus.EXPORTED, SyncStateStatus.SKIPPED_UNCHANGED)
             ):
                 self.logger.debug("Skipping unchanged invoice %s", source_record_id)
                 existing.mark_skipped()
@@ -166,7 +171,7 @@ class SyncEngine:
 
             # Update state based on result
             if result.is_success:
-                if result.status == ExportResult.Status.SKIPPED_UNCHANGED:
+                if result.status == Status.SKIPPED_UNCHANGED:
                     state.mark_skipped()
                     run.records_skipped += 1
                 else:
@@ -181,7 +186,14 @@ class SyncEngine:
 
         except Exception as e:
             self.logger.error("Failed to process invoice %s: %s", source_record_id, e)
-            state = await self.sync_state_service.sync_state(
+            # Reuse the existing state if present — creating a blank one
+            # would wipe the target_record_id link of a previously
+            # exported invoice and break traceability.
+            state = await self.sync_state_service.get_state(
+                self.tenant_id,
+                self.source.name,
+                source_record_id,
+            ) or await self.sync_state_service.sync_state(
                 tenant_id=self.tenant_id,
                 source_name=self.source.name,
                 source_record_id=source_record_id,
@@ -194,9 +206,7 @@ class SyncEngine:
 
     @retry(
         stop=stop_after_attempt(settings.max_retries + 1),
-        wait=wait_exponential(multiplier=settings.retry_base_delay,
-                              min=settings.retry_base_delay,
-                              max=60),
+        wait=wait_retry_after_aware,
         retry=retry_if_exception_type((RateLimitError, RetryableExportError)),
         before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
         reraise=True,
@@ -255,7 +265,7 @@ class SyncEngine:
             return e.result
         except RateLimitError as e:
             return ExportResult(
-                status=ExportResult.Status.CREATED,
+                status=Status.FAILED,
                 error=SyncError(
                     category=ErrorCategory.RETRYABLE,
                     code="RATE_LIMITED",
@@ -277,9 +287,12 @@ class SyncEngine:
 
     async def replay_failed(self, run_id: str) -> SyncRun:
         """
-        Replay failed records from a previous sync run.
+        Replay failed records after a previous sync run.
 
-        Creates a new sync run that only processes failed records.
+        Re-fetches each failed record from the source (so fixes upstream are
+        picked up) and re-exports it. Scope is all FAILED states for this
+        tenant — states do not track which run created them, so run_id is
+        validated and logged but not used as a filter.
         """
         original_run = await self.sync_run_service.get_run(run_id)
         if not original_run:

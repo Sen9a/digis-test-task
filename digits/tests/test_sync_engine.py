@@ -8,16 +8,20 @@ import pytest
 from src.clients.api_client import APIClient
 from src.connectors.source import SourceAPIConnector
 from src.connectors.target import TargetAPIConnector
+from src.const import ErrorCategory
 from src.db.engine import create_engine, create_session_factory, init_db
+from exceptions import RateLimitError, RetryableExportError
 from src.managers import SyncRunManager, SyncStatesManager
 from src.models import (
     ExportResult,
+    SyncError,
     SyncStateStatus,
     SyncRunStatus,
 )
 from src.services import SyncRunService, SyncStateService
 from src.services.fake_service import FakeAPIService
-from src.sync.engine import SyncEngine
+from src.sync.engine import SyncEngine, wait_retry_after_aware
+from settings import settings
 
 AUTH_RESPONSE = {"token": "***", "expires_in": 3600}
 
@@ -382,6 +386,160 @@ class TestSyncEngine:
         assert parts[1] == "source_api"
         assert parts[2] == "inv-001"
         assert len(parts[3]) == 64  # SHA256 hex
+
+    async def test_skip_stable_across_repeated_runs(
+        self, sync_run_service, sync_state_service
+    ):
+        """Repeated runs must keep skipping unchanged invoices.
+
+        Regression test: skipping used to set status=SKIPPED_UNCHANGED while
+        the skip check required EXPORTED, so every second run re-exported.
+        """
+        creds = {"api_key": "***"}
+
+        # Run 1: export all three invoices
+        source_svc1 = FakeAPIService()
+        target_svc1 = FakeAPIService()
+        source1 = _make_source(source_svc1)
+        target1 = _make_target(target_svc1)
+        for i in range(3):
+            target_svc1.add_response(
+                "POST", "/invoices",
+                {"id": f"tgt-{i+1}", "status": "created"}, status=201,
+            )
+        engine1 = SyncEngine(
+            source=source1, target=target1,
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
+        )
+        run1 = await engine1.run(source_credentials=creds, target_credentials=creds)
+        assert run1.records_succeeded == 3
+
+        # Runs 2 and 3: no export responses queued on the target — any
+        # export attempt would raise inside FakeAPIService and be recorded
+        # as a failure, so clean skips prove no export was attempted.
+        for _ in range(2):
+            source_svc = FakeAPIService()
+            target_svc = FakeAPIService()
+            source = _make_source(source_svc)
+            target = _make_target(target_svc)
+            engine = SyncEngine(
+                source=source, target=target,
+                sync_run_service=sync_run_service,
+                sync_state_service=sync_state_service,
+                tenant_id="tenant-1",
+                logger=logging.getLogger("test.engine"),
+            )
+            run = await engine.run(source_credentials=creds, target_credentials=creds)
+
+            assert run.records_processed == 3
+            assert run.records_skipped == 3
+            assert run.records_succeeded == 0
+            assert run.records_failed == 0
+            export_calls = [
+                r for r in target_svc.request_log if r["url"] == "/invoices"
+            ]
+            assert export_calls == []
+
+    async def test_failed_invoice_preserves_target_link(
+        self, sync_run_service, sync_state_service
+    ):
+        """A normalization failure must not wipe the target record link.
+
+        Regression test: the error handler used to upsert a blank state,
+        resetting target_record_id to None for previously exported invoices.
+        """
+        creds = {"api_key": "***"}
+
+        # Run 1: export all three invoices
+        source_svc1 = FakeAPIService()
+        target_svc1 = FakeAPIService()
+        source1 = _make_source(source_svc1)
+        target1 = _make_target(target_svc1)
+        for i in range(3):
+            target_svc1.add_response(
+                "POST", "/invoices",
+                {"id": f"tgt-{i+1}", "status": "created"}, status=201,
+            )
+        engine1 = SyncEngine(
+            source=source1, target=target1,
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
+        )
+        run1 = await engine1.run(source_credentials=creds, target_credentials=creds)
+        assert run1.records_succeeded == 3
+
+        # Run 2: inv-001 has a corrupt date → normalization fails
+        broken = [dict(inv) for inv in SAMPLE_INVOICES]
+        broken[0]["date"] = "not-a-date"
+
+        source_svc2 = FakeAPIService()
+        target_svc2 = FakeAPIService()
+        source2 = _make_source(source_svc2, invoices=broken)
+        target2 = _make_target(target_svc2)
+        engine2 = SyncEngine(
+            source=source2, target=target2,
+            sync_run_service=sync_run_service,
+            sync_state_service=sync_state_service,
+            tenant_id="tenant-1",
+            logger=logging.getLogger("test.engine"),
+        )
+        run2 = await engine2.run(source_credentials=creds, target_credentials=creds)
+
+        assert run2.records_failed == 1
+        assert run2.records_skipped == 2
+
+        state = await sync_state_service.get_state("tenant-1", "source_api", "inv-001")
+        assert state is not None
+        assert state.status == SyncStateStatus.FAILED
+        assert state.target_record_id == "tgt-1"  # link preserved
+        assert state.last_error is not None
+
+
+class _FakeOutcome:
+    def __init__(self, exc):
+        self._exc = exc
+
+    def exception(self):
+        return self._exc
+
+
+class _FakeRetryState:
+    """Minimal stand-in for tenacity's RetryCallState."""
+
+    def __init__(self, exc, attempt):
+        self.outcome = _FakeOutcome(exc)
+        self.attempt_number = attempt
+
+
+class TestWaitStrategy:
+    """Tests for the Retry-After-aware tenacity wait function."""
+
+    def test_honors_server_retry_after(self):
+        exc = RateLimitError("slow down", retry_after_seconds=7)
+        assert wait_retry_after_aware(_FakeRetryState(exc, attempt=1)) == 7.0
+
+    def test_retry_after_capped_at_60s(self):
+        exc = RateLimitError("slow down", retry_after_seconds=3600)
+        assert wait_retry_after_aware(_FakeRetryState(exc, attempt=1)) == 60.0
+
+    def test_exponential_backoff_for_other_retryable_errors(self):
+        result = ExportResult(
+            status=ExportResult.Status.FAILED,
+            error=SyncError(
+                category=ErrorCategory.RETRYABLE,
+                code="HTTP_500",
+                message="boom",
+            ),
+        )
+        exc = RetryableExportError(result)
+        base = settings.retry_base_delay
+        assert wait_retry_after_aware(_FakeRetryState(exc, attempt=1)) == base
+        assert wait_retry_after_aware(_FakeRetryState(exc, attempt=3)) == base * 4
 
 
 class TestSyncEngineWithPagination:
