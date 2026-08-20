@@ -1,0 +1,47 @@
+services:
+  fake-source-api:
+    build: ./fake_apis/source_api
+    container_name: fake-source-api
+    ports:
+      - "8001:8001"
+    environment:
+      - INVOICE_COUNT=25
+      - RATE_LIMIT_AFTER=0
+    networks:
+      - digits
+
+  fake-target-api:
+    build: ./fake_apis/target_api
+    container_name: fake-target-api
+    ports:
+      - "8002:8002"
+    environment:
+      - SUPPORTS_IDEMPOTENCY=true
+      - SUPPORTS_UPDATE=true
+      - REQUIRES_REVERSAL=false
+      - REJECTS_DUPLICATES=true
+      - RATE_LIMIT_AFTER=0
+    networks:
+      - digits
+
+  orchestrator:
+    build: ./digits
+    container_name: orchestrator
+    environment:
+      - SOURCE_API_URL=http://fake-source-api:8001
+      - TARGET_API_URL=http://fake-target-api:8002
+      - TENANT_ID=demo-tenant
+      - SOURCE_API_KEY=***
+      - TARGET_API_KEY=***
+      - BATCH_SIZE=10
+      - MAX_RETRIES=3
+      - RETRY_BASE_DELAY=1.0
+    depends_on:
+      - fake-source-api
+      - fake-target-api
+    networks:
+      - digits
+
+networks:
+  digits:
+    driver: bridge

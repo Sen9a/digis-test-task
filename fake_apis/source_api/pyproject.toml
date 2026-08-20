@@ -1,0 +1,16 @@
+[project]
+name = "fake-source-api"
+version = "0.1.0"
+description = "Fake source invoicing API for testing"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi (>=0.141.1,<1.0.0)",
+    "uvicorn (>=0.52.4,<1.0.0)",
+]
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
