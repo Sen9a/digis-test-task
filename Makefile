@@ -64,13 +64,13 @@ db:
 	docker compose up -d postgres
 
 migrate:
-	cd digits && poetry run alembic upgrade head
+	cd digis && poetry run alembic upgrade head
 
 migrate-new:
-	cd digits && poetry run alembic revision --autogenerate -m "$(msg)"
+	cd digis && poetry run alembic revision --autogenerate -m "$(msg)"
 
 migrate-history:
-	cd digits && poetry run alembic history
+	cd digis && poetry run alembic history
 
 db-logs:
 	docker compose logs -f postgres
@@ -85,13 +85,13 @@ replay:
 
 # Run tests
 test:
-	cd digits && poetry run pytest tests/ -v
+	cd digis && poetry run pytest tests/ -v
 
 test-unit:
-	cd digits && poetry run pytest tests/ -v --ignore=tests/test_integration.py
+	cd digis && poetry run pytest tests/ -v --ignore=tests/test_integration.py
 
 test-integration:
-	cd digits && poetry run pytest tests/test_integration.py -v
+	cd digis && poetry run pytest tests/test_integration.py -v
 
 # Clean up
 clean:

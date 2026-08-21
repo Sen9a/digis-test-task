@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     tenant_id: str = "demo-tenant"
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/digits"
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/digis"
 
     # Sync behavior
     batch_size: int = 10

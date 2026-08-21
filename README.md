@@ -1,4 +1,4 @@
-# Digits Test Task — Invoice-to-Accounting Sync
+# Digis Test Task — Invoice-to-Accounting Sync
 
 Integration service that synchronizes invoices from source invoicing systems to target accounting systems.
 
@@ -31,10 +31,10 @@ Integration service that synchronizes invoices from source invoicing systems to 
 ## Project Structure
 
 ```
-digits-test-task/
+digis-test-task/
 ├── docker-compose.yml          # All services
 │
-├── digits/                     # Main sync service
+├── digis/                      # Main sync service
 │   ├── pyproject.toml          # Poetry config
 │   ├── Dockerfile              # Orchestrator container
 │   ├── main.py                 # CLI entry point
@@ -122,7 +122,7 @@ docker compose up orchestrator
 ### Tests (manual)
 
 ```bash
-cd digits
+cd digis
 
 # Install dependencies
 poetry install --extras dev
@@ -160,7 +160,7 @@ attempts:
 
 ```bash
 make restart-target      # reset rate-limit counter and in-memory invoices
-cd digits && poetry run python -m main
+cd digis && poetry run python -m main
 ```
 
 To recover the failed records, reset the target and replay them — only FAILED
@@ -168,7 +168,7 @@ states are reprocessed, each re-fetched from the source:
 
 ```bash
 make restart-target
-make replay              # or: cd digits && poetry run python -m main --replay
+make replay              # or: cd digis && poetry run python -m main --replay
 ```
 
 ### Configuration
@@ -182,7 +182,7 @@ Environment variables for the orchestrator:
 | `TENANT_ID` | `demo-tenant` | Tenant identifier |
 | `SOURCE_API_KEY` | `test-key` | Source API key |
 | `TARGET_API_KEY` | `test-key` | Target API key |
-| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5433/digits` | State store connection |
+| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5433/digis` | State store connection |
 | `BATCH_SIZE` | `10` | Invoices per fetch batch |
 | `MAX_RETRIES` | `3` | Export retry attempts (honors `Retry-After`) |
 | `RETRY_BASE_DELAY` | `1.0` | Exponential backoff base delay (seconds) |
@@ -270,7 +270,7 @@ actually exists.
 
 ### State Store Schema (Implemented)
 
-The following tables are created by the Alembic migration in `digits/migrations/`:
+The following tables are created by the Alembic migration in `digis/migrations/`:
 
 ```sql
 CREATE TABLE sync_states (

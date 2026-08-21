@@ -1,5 +1,5 @@
 [project]
-name = "digits-test-task"
+name = "digis-test-task"
 version = "0.1.0"
 description = "Invoice-to-accounting sync integration service"
 authors = [
