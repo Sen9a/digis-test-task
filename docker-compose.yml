@@ -8,7 +8,7 @@ services:
       - INVOICE_COUNT=25
       - RATE_LIMIT_AFTER=0
     networks:
-      - digits
+      - digis
 
   fake-target-api:
     build: ./fake_apis/target_api
@@ -22,7 +22,7 @@ services:
       - REJECTS_DUPLICATES=true
       - RATE_LIMIT_AFTER=0
     networks:
-      - digits
+      - digis
 
   postgres:
     image: postgres:16-alpine
@@ -30,16 +30,16 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=digits
+      - POSTGRES_DB=digis
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
-      - digits
+      - digis
 
   orchestrator:
-    build: ./digits
+    build: ./digis
     container_name: orchestrator
     environment:
       - SOURCE_API_URL=http://fake-source-api:8001
@@ -50,17 +50,17 @@ services:
       - BATCH_SIZE=10
       - MAX_RETRIES=3
       - RETRY_BASE_DELAY=1.0
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/digits
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/digis
     depends_on:
       - fake-source-api
       - fake-target-api
       - postgres
     networks:
-      - digits
+      - digis
 
 volumes:
   pgdata:
 
 networks:
-  digits:
+  digis:
     driver: bridge
