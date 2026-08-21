@@ -46,15 +46,17 @@ digits-test-task/
 │   │   ├── models/             # Pydantic models (UnifiedInvoice, SyncState, etc.)
 │   │   ├── services/           # APIService ABC, AiohttpAPIService, FakeAPIService,
 │   │   │                       # SyncStateService, SyncRunService
-│   │   ├── managers/           # SQLAlchemy Core persistence layer
-│   │   ├── db/                 # Table definitions, async engine
+│   │   ├── managers/           # Persistence layer (async ORM sessions via get_db_session)
+│   │   ├── tables/             # SQLAlchemy ORM table declarations (DeclarativeBase)
+│   │   ├── db/                 # Async engine, session factory, get_db_session, init_db
 │   │   ├── sync/               # SyncEngine
 │   │   ├── utils.py            # Retry-After-aware tenacity wait strategy
 │   │   └── const.py            # ErrorCategory, Status enums
 │   │
 │   ├── migrations/             # Alembic migrations (sync_states, sync_runs)
 │   │
-│   └── tests/                  # 44 tests (unit + integration)
+│   └── tests/                  # 44 tests (unit + integration); conftest.py redirects
+│                               # them to an auto-created "<db>_test" database
 │
 └── fake_apis/
     ├── source_api/             # Fake invoicing system (port 8001)
@@ -79,6 +81,9 @@ make up
 
 # Run one sync
 make run
+
+# Replay failed records once
+make replay
 
 # Run tests
 make db               # tests need PostgreSQL (sync engine tests use the state store)
@@ -132,6 +137,38 @@ poetry run pytest tests/test_integration.py -v
 
 # All tests
 poetry run pytest tests/ -v
+```
+
+**Test database isolation:** `tests/conftest.py` redirects `DATABASE_URL` to a dedicated
+`<db>_test` database (auto-created on first run) before any app module is imported,
+so test runs never touch application state — the fixtures call `manager.clear()`,
+which deletes all rows.
+
+**Integration tests and rate limiting:** the fake target in `docker-compose.yml`
+currently runs with `RATE_LIMIT_AFTER=15` to demonstrate retry/backoff behavior.
+Integration tests sync all 25 invoices and expect zero failures, so set it back to
+`0` and recreate the container (`docker compose up -d fake-target-api`) before
+running `make test-integration`. Unit tests are unaffected (they use `FakeAPIService`).
+
+### Rate-Limit Demo
+
+With `RATE_LIMIT_AFTER=15` on the fake target, a sync run demonstrates the retry
+behavior live: after 15 requests the target returns `429` with `retry_after` in
+the body, and the engine retries with the requested delay (tenacity +
+`wait_retry_after_aware`), then marks records `failed` after `MAX_RETRIES + 1`
+attempts:
+
+```bash
+make restart-target      # reset rate-limit counter and in-memory invoices
+cd digits && poetry run python -m main
+```
+
+To recover the failed records, reset the target and replay them — only FAILED
+states are reprocessed, each re-fetched from the source:
+
+```bash
+make restart-target
+make replay              # or: cd digits && poetry run python -m main --replay
 ```
 
 ### Configuration
@@ -198,6 +235,38 @@ Environment variables for the orchestrator:
 7. **Webhook notifications** — For sync completion/failure
 8. **Metrics and alerting** — Prometheus metrics, PagerDuty alerts
 9. **Per-tenant secret storage** — Vault/AWS Secrets Manager with scoped access and rotation
+10. **Scheduled replay with attempt cap** — Cron job running `replay_failed()` for
+    FAILED states where `attempt_count < N`, moving exhausted records to a terminal
+    dead-letter state; replay is already idempotency-safe (idempotency keys are
+    honored by the target) and each replay writes its own `sync_runs` row
+
+### Multi-Source / Multi-Target Design (Planned)
+
+The current engine is deliberately single-pair. Scaling to N sources and M targets:
+
+1. **Config: one pair → list of pairs.** Replace the single `SOURCE_API_URL` /
+   `TARGET_API_URL` settings with a list of connection configs, each with a stable
+   `name` (e.g. `{name, source: {type, url, api_key}, targets: [...]}`). The name
+   is the identity key in `sync_states`, so renaming a connector orphans its state.
+2. **Connector factory.** A registry mapping `type` → connector class; each entry
+   builds its own `APIClient`/`APIService`. New connectors implement the existing
+   ABCs in `src/abstract/`.
+3. **Orchestration: keep `SyncEngine` single-pair.** An orchestrator builds one
+   engine per (source, target) pair and runs them with `asyncio.gather`, with a
+   per-target semaphore to respect per-target rate limits. Each pair gets its own
+   `sync_runs` row, and failure isolation comes for free — target B being down
+   does not block source → target A.
+4. **Schema change only for fan-out.** Multi-source → one target needs no schema
+   change. But one source record exported to two targets does: the unique
+   constraint must become `(tenant_id, source_connector, source_record_id,
+   target_connector)` — otherwise the second target's upsert overwrites the first
+   target's state. Requires an Alembic migration plus threading `target_connector`
+   through `get_state()` / `save_state()` / `replay_failed()`.
+5. **`replay_failed` per pair.** Optional source/target filters so a scheduled
+   replay job reprocesses one failing pipe instead of the whole tenant.
+
+Suggested order: steps 1–3 first (no schema changes), step 4 when a second target
+actually exists.
 
 ### State Store Schema (Implemented)
 
@@ -205,34 +274,35 @@ The following tables are created by the Alembic migration in `digits/migrations/
 
 ```sql
 CREATE TABLE sync_states (
-    id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL,
+    id VARCHAR(36) PRIMARY KEY,
+    tenant_id VARCHAR(255) NOT NULL,
     source_connector VARCHAR(50) NOT NULL,
     source_record_id VARCHAR(255) NOT NULL,
     target_connector VARCHAR(50) NOT NULL,
     target_record_id VARCHAR(255),
     content_hash VARCHAR(64) NOT NULL,
     status VARCHAR(20) NOT NULL,
-    attempt_count INT DEFAULT 0,
-    last_attempt_at TIMESTAMP,
+    attempt_count INT,
+    last_attempt_at TIMESTAMPTZ,
     last_error TEXT,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(tenant_id, source_connector, source_record_id)
 );
 
 CREATE TABLE sync_runs (
-    id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL,
+    id VARCHAR(36) PRIMARY KEY,
+    tenant_id VARCHAR(255) NOT NULL,
     source_connector VARCHAR(50) NOT NULL,
     target_connector VARCHAR(50) NOT NULL,
     status VARCHAR(20) NOT NULL,
     cursor_position VARCHAR(255),
-    records_processed INT DEFAULT 0,
-    records_succeeded INT DEFAULT 0,
-    records_failed INT DEFAULT 0,
-    started_at TIMESTAMP DEFAULT NOW(),
-    completed_at TIMESTAMP
+    records_processed INT,
+    records_succeeded INT,
+    records_failed INT,
+    records_skipped INT,
+    started_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
 );
 ```
 

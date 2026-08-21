@@ -1,4 +1,4 @@
-.PHONY: build up down restart logs test test-unit test-integration clean
+.PHONY: build up down restart logs test test-unit test-integration clean replay
 
 # Build all services
 build:
@@ -78,6 +78,10 @@ db-logs:
 # Run sync once
 run:
 	docker compose up orchestrator
+
+# Replay failed records once
+replay:
+	docker compose run --rm orchestrator python -m main --replay
 
 # Run tests
 test:
