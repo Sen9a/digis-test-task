@@ -2,12 +2,14 @@
 CLI entry point for running a single invoice sync.
 
 Usage:
-    python -m main
+    python -m main            # Full sync
+    python -m main --replay   # Replay failed records only
 
 Configuration via .env file or environment variables.
 See settings.py for all available options.
 """
 
+import argparse
 import asyncio
 import logging
 import sys
@@ -29,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> int:
+    parser = argparse.ArgumentParser(description="Run invoice sync")
+    parser.add_argument(
+        "--replay",
+        action="store_true",
+        help="Replay failed records only, instead of a full sync",
+    )
+    args = parser.parse_args()
 
     logger.info(
         "Starting sync: %s → %s (tenant: %s)",
@@ -65,11 +74,17 @@ async def main() -> int:
         logger=logging.getLogger("sync_engine"),
     )
 
-    run = await engine.run(
-        source_credentials={"api_key": settings.source_api_key},
-        target_credentials={"api_key": settings.target_api_key},
-        batch_size=settings.batch_size,
-    )
+    if args.replay:
+        run = await engine.replay_failed(
+            source_credentials={"api_key": settings.source_api_key},
+            target_credentials={"api_key": settings.target_api_key},
+        )
+    else:
+        run = await engine.run(
+            source_credentials={"api_key": settings.source_api_key},
+            target_credentials={"api_key": settings.target_api_key},
+            batch_size=settings.batch_size,
+        )
 
     # Print results
     print()
