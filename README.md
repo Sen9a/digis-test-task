@@ -88,9 +88,9 @@ make replay
 # Run tests
 make db               # tests need PostgreSQL (sync engine tests use the state store)
 make migrate          # apply migrations (or let tests create tables via init_db)
-make test              # all tests
+make test              # all tests (restarts the fake target first for a clean slate)
 make test-unit         # unit tests only (needs PostgreSQL, not the fake APIs)
-make test-integration  # integration tests (requires Docker)
+make test-integration  # integration tests (requires Docker; restarts the fake target first)
 
 # Logs
 make logs              # all services
@@ -144,11 +144,13 @@ poetry run pytest tests/ -v
 so test runs never touch application state — the fixtures call `manager.clear()`,
 which deletes all rows.
 
-**Integration tests and rate limiting:** the fake target in `docker-compose.yml`
-currently runs with `RATE_LIMIT_AFTER=15` to demonstrate retry/backoff behavior.
-Integration tests sync all 25 invoices and expect zero failures, so set it back to
-`0` and recreate the container (`docker compose up -d fake-target-api`) before
-running `make test-integration`. Unit tests are unaffected (they use `FakeAPIService`).
+**Integration tests and rate limiting:** integration tests sync all 25 invoices and
+expect zero failures, so the fake target must run with `RATE_LIMIT_AFTER=0` (the
+current value in `docker-compose.yml`). `make test` / `make test-integration` restart
+the fake target first, clearing its in-memory invoices and rate-limit counter — if
+you enabled the rate-limit demo, set it back to `0` and recreate the container
+(`docker compose up -d fake-target-api`) before running them. Unit tests are
+unaffected (they use `FakeAPIService`).
 
 ### Rate-Limit Demo
 
