@@ -83,14 +83,16 @@ run:
 replay:
 	docker compose run --rm orchestrator python -m main --replay
 
-# Run tests
-test:
+# Run tests (full suite includes integration tests → fresh fake target first)
+test: restart-target
 	cd digis && poetry run pytest tests/ -v
 
 test-unit:
 	cd digis && poetry run pytest tests/ -v --ignore=tests/test_integration.py
 
-test-integration:
+# Integration tests need a fresh fake target (in-memory invoices + rate-limit
+# counter), otherwise exports from a previous sync run fail as duplicates
+test-integration: restart-target
 	cd digis && poetry run pytest tests/test_integration.py -v
 
 # Clean up
